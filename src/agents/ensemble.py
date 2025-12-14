@@ -145,6 +145,29 @@ def ensemble_agent(state: AgentState, agent_id: str = "ensemble_agent"):
     tickers = data["tickers"]
     analyst_signals = data.get("analyst_signals", {})
     
+    # Try to get credibility from knowledge base (learned from past backtests)
+    try:
+        from src.knowledge.agent_knowledge import get_agent_credibility_from_knowledge_base
+        
+        # Enhance agent_credibility with knowledge base data
+        agent_credibility = data.get("agent_credibility", {})
+        kb_credibility = {}
+        for agent_name in ["warren_buffett_agent", "momentum_agent"]:
+            kb_cred = get_agent_credibility_from_knowledge_base(agent_name)
+            # Use knowledge base credibility if available, otherwise use state credibility
+            if agent_name not in agent_credibility or agent_credibility[agent_name] == 0.5:
+                kb_credibility[agent_name] = kb_cred
+            else:
+                # Blend: 70% state (current run), 30% knowledge base (historical)
+                kb_credibility[agent_name] = (agent_credibility[agent_name] * 0.7) + (kb_cred * 0.3)
+        
+        # Update agent_credibility with knowledge base insights
+        if kb_credibility:
+            agent_credibility.update(kb_credibility)
+    except Exception:
+        # Fallback to state credibility if knowledge base unavailable
+        agent_credibility = data.get("agent_credibility", None)
+    
     ensemble_analysis = {}
     
     for ticker in tickers:
@@ -163,9 +186,6 @@ def ensemble_agent(state: AgentState, agent_id: str = "ensemble_agent"):
         momentum_confidence = momentum_ticker_data.get("confidence")
         
         progress.update_status(agent_id, ticker, "Combining signals with credibility-weighted weights")
-        
-        # Get credibility scores from state (Part B: credibility weighting)
-        agent_credibility = data.get("agent_credibility", None)
         
         # Generate ensemble signal (always deterministic, now with credibility weighting)
         ensemble_output = calculate_ensemble_signal_rule_based(

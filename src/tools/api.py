@@ -5,6 +5,7 @@ import requests
 import time
 
 from src.data.cache import get_cache
+from src.utils.deterministic_guard import is_deterministic_mode
 from src.data.models import (
     CompanyNews,
     CompanyNewsResponse,
@@ -27,6 +28,8 @@ def _make_api_request(url: str, headers: dict, method: str = "GET", json_data: d
     """
     Make an API request with rate limiting handling and moderate backoff.
     
+    In deterministic mode (HEDGEFUND_NO_LLM=1), all external API calls are blocked.
+    
     Args:
         url: The URL to request
         headers: Headers to include in the request
@@ -35,11 +38,23 @@ def _make_api_request(url: str, headers: dict, method: str = "GET", json_data: d
         max_retries: Maximum number of retries (default: 3)
     
     Returns:
-        requests.Response: The response object
+        requests.Response: The response object (empty response in deterministic mode)
     
     Raises:
-        Exception: If the request fails with a non-429 error
+        Exception: If the request fails with a non-429 error (not in deterministic mode)
     """
+    # System-wide guard: Block all external API calls in deterministic mode
+    if is_deterministic_mode():
+        # Return a mock empty response to prevent blocking
+        # This ensures agents can continue without hanging
+        class MockResponse:
+            status_code = 200
+            def json(self):
+                return {"results": [], "count": 0}
+            def text(self):
+                return '{"results": [], "count": 0}'
+        return MockResponse()
+    
     for attempt in range(max_retries + 1):  # +1 for initial attempt
         if method.upper() == "POST":
             response = requests.post(url, headers=headers, json=json_data)

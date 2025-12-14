@@ -27,6 +27,12 @@ def warren_buffett_agent(state: AgentState, agent_id: str = "warren_buffett_agen
     - Pabrai: Dhandho principles (low risk, high reward)
     
     Outputs ONE signal with confidence based on composite scoring.
+    
+    STATUS: INVALID FOR DIRECT TRADE EXECUTION
+    - Falsified in 5-year deterministic backtest
+    - Does not beat buy-and-hold after costs
+    - Requires external financial data (not price-only)
+    - Do not tune or repair - agent has no standalone edge
     """
     data = state["data"]
     end_date = data["end_date"]

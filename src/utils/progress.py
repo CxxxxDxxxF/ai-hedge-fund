@@ -1,3 +1,4 @@
+import os
 from datetime import datetime, timezone
 from rich.console import Console
 from rich.live import Live
@@ -31,14 +32,26 @@ class AgentProgress:
 
     def start(self):
         """Start the progress display."""
+        # Check if progress is disabled (deterministic mode or CI)
+        if os.getenv("HEDGEFUND_NO_LLM") == "1" or os.getenv("CI") == "true":
+            # Don't start live display in deterministic/CI mode
+            self.started = False
+            return
         if not self.started:
-            self.live.start()
-            self.started = True
+            try:
+                self.live.start()
+                self.started = True
+            except Exception:
+                # If live display fails (e.g., no TTY), continue without it
+                self.started = False
 
     def stop(self):
         """Stop the progress display."""
         if self.started:
-            self.live.stop()
+            try:
+                self.live.stop()
+            except Exception:
+                pass  # Ignore errors when stopping
             self.started = False
 
     def update_status(self, agent_name: str, ticker: Optional[str] = None, status: str = "", analysis: Optional[str] = None):
@@ -73,43 +86,53 @@ class AgentProgress:
 
     def _refresh_display(self):
         """Refresh the progress display."""
-        self.table.columns.clear()
-        self.table.add_column(width=100)
+        # Skip refresh if not started (deterministic mode or no TTY)
+        if not self.started:
+            return
+        try:
+            self.table.columns.clear()
+            self.table.add_column(width=100)
 
-        # Sort agents with Risk Management and Portfolio Management at the bottom
-        def sort_key(item):
-            agent_name = item[0]
-            if "risk_management" in agent_name:
-                return (2, agent_name)
-            elif "portfolio_management" in agent_name:
-                return (3, agent_name)
-            else:
-                return (1, agent_name)
+            # Sort agents with Risk Management and Portfolio Management at the bottom
+            def sort_key(item):
+                agent_name = item[0]
+                if "risk_management" in agent_name:
+                    return (2, agent_name)
+                elif "portfolio_management" in agent_name:
+                    return (3, agent_name)
+                else:
+                    return (1, agent_name)
 
-        for agent_name, info in sorted(self.agent_status.items(), key=sort_key):
-            status = info["status"]
-            ticker = info["ticker"]
-            # Create the status text with appropriate styling
-            if status.lower() == "done":
-                style = Style(color="green", bold=True)
-                symbol = "✓"
-            elif status.lower() == "error":
-                style = Style(color="red", bold=True)
-                symbol = "✗"
-            else:
-                style = Style(color="yellow")
-                symbol = "⋯"
+            for agent_name, info in sorted(self.agent_status.items(), key=sort_key):
+                status = info["status"]
+                ticker = info["ticker"]
+                # Create the status text with appropriate styling
+                if status.lower() == "done":
+                    style = Style(color="green", bold=True)
+                    symbol = "✓"
+                elif status.lower() == "error":
+                    style = Style(color="red", bold=True)
+                    symbol = "✗"
+                else:
+                    style = Style(color="yellow")
+                    symbol = "⋯"
 
-            agent_display = self._get_display_name(agent_name)
-            status_text = Text()
-            status_text.append(f"{symbol} ", style=style)
-            status_text.append(f"{agent_display:<20}", style=Style(bold=True))
+                agent_display = self._get_display_name(agent_name)
+                status_text = Text()
+                status_text.append(f"{symbol} ", style=style)
+                status_text.append(f"{agent_display:<20}", style=Style(bold=True))
 
-            if ticker:
-                status_text.append(f"[{ticker}] ", style=Style(color="cyan"))
-            status_text.append(status, style=style)
+                if ticker:
+                    status_text.append(f"[{ticker}] ", style=Style(color="cyan"))
+                status_text.append(status, style=style)
 
-            self.table.add_row(status_text)
+                self.table.add_row(status_text)
+            
+            # Only refresh if started (non-blocking)
+            self.live.refresh()
+        except Exception:
+            # If refresh fails, disable display
+            self.started = False
 
 
 # Create a global instance
