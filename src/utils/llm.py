@@ -1,5 +1,6 @@
 """Helper functions for LLM"""
 
+import os
 import json
 from pydantic import BaseModel
 from src.llm.models import get_model, get_model_info
@@ -14,6 +15,7 @@ def call_llm(
     state: AgentState | None = None,
     max_retries: int = 3,
     default_factory=None,
+    rule_based_factory=None,
 ) -> BaseModel:
     """
     Makes an LLM call with retry logic, handling both JSON supported and non-JSON supported models.
@@ -25,10 +27,26 @@ def call_llm(
         state: Optional state object to extract agent-specific model configuration
         max_retries: Maximum number of retries (default: 3)
         default_factory: Optional factory function to create default response on failure
+        rule_based_factory: Optional factory function for deterministic rule-based output (used when HEDGEFUND_NO_LLM is set)
 
     Returns:
         An instance of the specified Pydantic model
     """
+    
+    # Check for deterministic mode
+    if os.getenv("HEDGEFUND_NO_LLM", "").lower() in ("1", "true", "yes"):
+        if rule_based_factory:
+            if agent_name:
+                progress.update_status(agent_name, None, "Using rule-based logic (NO_LLM mode)")
+            return rule_based_factory()
+        elif default_factory:
+            if agent_name:
+                progress.update_status(agent_name, None, "Using default factory (NO_LLM mode)")
+            return default_factory()
+        else:
+            if agent_name:
+                progress.update_status(agent_name, None, "Using default response (NO_LLM mode)")
+            return create_default_response(pydantic_model)
     
     # Extract model configuration if state is provided and agent_name is available
     if state and agent_name:

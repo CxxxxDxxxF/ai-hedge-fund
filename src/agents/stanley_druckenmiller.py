@@ -593,10 +593,51 @@ def generate_druckenmiller_output(
             reasoning="Error in analysis, defaulting to neutral"
         )
 
+    def create_rule_based_druckenmiller_signal():
+        """Deterministic Druckenmiller signal based on macro/growth analysis."""
+        ticker_data = analysis_data.get(ticker, {})
+        signal = ticker_data.get("signal", "neutral")
+        score = ticker_data.get("score", 0)
+        max_score = ticker_data.get("max_score", 10)
+        
+        if max_score == 0:
+            return StanleyDruckenmillerSignal(
+                signal="neutral",
+                confidence=50,
+                reasoning="Insufficient data for Druckenmiller analysis"
+            )
+        
+        score_ratio = score / max_score
+        
+        # Calculate confidence based on score ratio
+        if signal == "bullish":
+            confidence = min(85, 50 + int(score_ratio * 50))
+        elif signal == "bearish":
+            confidence = min(85, 50 + int((1 - score_ratio) * 50))
+        else:
+            confidence = 50
+        
+        # Build reasoning from analysis components
+        growth = ticker_data.get("growth_analysis", {})
+        insider = ticker_data.get("insider_analysis", {})
+        
+        reasoning = (
+            f"Druckenmiller macro: Score {score:.1f}/{max_score} ({score_ratio:.1%}). "
+            f"Growth: {growth.get('score', 0):.1f}, Insider: {insider.get('score', 0):.1f}. "
+            f"{signal.capitalize()} ({confidence}%)"
+        )
+        
+        return StanleyDruckenmillerSignal(
+            signal=signal,
+            confidence=float(confidence),
+            reasoning=reasoning
+        )
+
     return call_llm(
         prompt=prompt,
         pydantic_model=StanleyDruckenmillerSignal,
         agent_name=agent_id,
         state=state,
         default_factory=create_default_signal,
+        rule_based_factory=create_rule_based_druckenmiller_signal,
     )

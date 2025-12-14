@@ -22,6 +22,54 @@ class Sentiment(BaseModel):
     confidence: int = Field(description="Confidence 0-100")
 
 
+def analyze_sentiment_rule_based(headline: str, ticker: str) -> Sentiment:
+    """
+    Deterministic sentiment analysis based on keyword matching.
+    Used when HEDGEFUND_NO_LLM is set.
+    """
+    headline_lower = headline.lower()
+    
+    # Positive keywords (strong)
+    positive_strong = ["surge", "soar", "rally", "jump", "gain", "profit", "beat", "exceed", "upgrade", "bullish", "growth", "record", "breakthrough"]
+    # Positive keywords (moderate)
+    positive_moderate = ["rise", "increase", "up", "positive", "strong", "good", "success", "win", "approve", "expand"]
+    
+    # Negative keywords (strong)
+    negative_strong = ["plunge", "crash", "collapse", "drop", "fall", "loss", "miss", "downgrade", "bearish", "decline", "fail", "bankrupt", "lawsuit"]
+    # Negative keywords (moderate)
+    negative_moderate = ["down", "decrease", "weak", "negative", "concern", "worry", "risk", "cut", "reduce", "delay"]
+    
+    # Count keyword matches
+    positive_score = 0
+    negative_score = 0
+    
+    for keyword in positive_strong:
+        if keyword in headline_lower:
+            positive_score += 3
+    for keyword in positive_moderate:
+        if keyword in headline_lower:
+            positive_score += 1
+    for keyword in negative_strong:
+        if keyword in headline_lower:
+            negative_score += 3
+    for keyword in negative_moderate:
+        if keyword in headline_lower:
+            negative_score += 1
+    
+    # Determine sentiment
+    if positive_score > negative_score and positive_score >= 2:
+        sentiment = "positive"
+        confidence = min(85, 50 + (positive_score - negative_score) * 10)
+    elif negative_score > positive_score and negative_score >= 2:
+        sentiment = "negative"
+        confidence = min(85, 50 + (negative_score - positive_score) * 10)
+    else:
+        sentiment = "neutral"
+        confidence = 50
+    
+    return Sentiment(sentiment=sentiment, confidence=confidence)
+
+
 def news_sentiment_agent(state: AgentState, agent_id: str = "news_sentiment_agent"):
     """
     Analyzes news sentiment for a list of tickers and generates trading signals.
@@ -82,7 +130,13 @@ def news_sentiment_agent(state: AgentState, agent_id: str = "news_sentiment_agen
                     f"Respond in JSON format.\n\n"
                     f"Headline: {news.title}"
                 )
-                response = call_llm(prompt, Sentiment, agent_name=agent_id, state=state)
+                response = call_llm(
+                    prompt, 
+                    Sentiment, 
+                    agent_name=agent_id, 
+                    state=state,
+                    rule_based_factory=lambda: analyze_sentiment_rule_based(news.title, ticker)
+                )
                 if response:
                     news.sentiment = response.sentiment.lower()
                     sentiment_confidences[id(news)] = response.confidence

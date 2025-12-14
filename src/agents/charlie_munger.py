@@ -847,10 +847,46 @@ def generate_munger_output(
     def _default():
         return CharlieMungerSignal(signal="neutral", confidence=confidence_hint, reasoning="Insufficient data")
 
+    def _rule_based():
+        """Deterministic Munger signal based on analysis scores."""
+        signal = analysis_data.get("signal", "neutral")
+        score = analysis_data.get("score", 0)
+        max_score = analysis_data.get("max_score", 10)
+        
+        if max_score == 0:
+            return CharlieMungerSignal(
+                signal="neutral",
+                confidence=50,
+                reasoning="Insufficient data for Munger analysis"
+            )
+        
+        # Use computed confidence_hint
+        conf = confidence_hint
+        
+        # Build reasoning from analysis components
+        moat = analysis_data.get("moat_analysis", {})
+        mgmt = analysis_data.get("management_analysis", {})
+        pred = analysis_data.get("predictability_analysis", {})
+        val = analysis_data.get("valuation_analysis", {})
+        
+        reasoning = (
+            f"Munger: Score {score:.1f}/{max_score}. "
+            f"Moat: {moat.get('score', 0):.1f}, Mgmt: {mgmt.get('score', 0):.1f}, "
+            f"Predict: {pred.get('score', 0):.1f}, Val: {val.get('score', 0):.1f}. "
+            f"{signal.capitalize()} ({conf}%)"
+        )
+        
+        return CharlieMungerSignal(
+            signal=signal,
+            confidence=conf,
+            reasoning=reasoning
+        )
+
     return call_llm(
         prompt=prompt,
         pydantic_model=CharlieMungerSignal,
         agent_name=agent_id,
         state=state,
         default_factory=_default,
+        rule_based_factory=_rule_based,
     )
