@@ -1,4 +1,5 @@
 import sys
+import os
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
 import argparse
@@ -103,6 +104,11 @@ def select_analysts(flags: dict | None = None) -> list[str]:
 
 
 def select_model(use_ollama: bool, model_flag: str | None = None) -> tuple[str, str]:
+    # In deterministic mode, skip model selection (not needed)
+    if os.getenv("HEDGEFUND_NO_LLM") == "1":
+        # Return a dummy model - it won't be used in deterministic mode
+        return "dummy-model", "dummy-provider"
+    
     model_name: str = ""
     model_provider: str | None = None
 

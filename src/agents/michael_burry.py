@@ -367,10 +367,54 @@ def _generate_burry_output(
     def create_default_michael_burry_signal():
         return MichaelBurrySignal(signal="neutral", confidence=0.0, reasoning="Parsing error – defaulting to neutral")
 
+    def create_rule_based_michael_burry_signal():
+        """Deterministic Michael Burry signal based on contrarian value analysis."""
+        ticker_data = analysis_data.get(ticker, {})
+        signal = ticker_data.get("signal", "neutral")
+        score = ticker_data.get("score", 0)
+        max_score = ticker_data.get("max_score", 20)
+        
+        if max_score == 0:
+            return MichaelBurrySignal(
+                signal="neutral",
+                confidence=50,
+                reasoning="Insufficient data for Burry analysis"
+            )
+        
+        score_ratio = score / max_score
+        
+        # Calculate confidence based on score ratio
+        if signal == "bullish":
+            confidence = min(85, 50 + int(score_ratio * 50))
+        elif signal == "bearish":
+            confidence = min(85, 50 + int((1 - score_ratio) * 50))
+        else:
+            confidence = 50
+        
+        # Build reasoning from analysis components
+        value = ticker_data.get("value_analysis", {})
+        balance = ticker_data.get("balance_sheet_analysis", {})
+        insider = ticker_data.get("insider_analysis", {})
+        contrarian = ticker_data.get("contrarian_analysis", {})
+        
+        reasoning = (
+            f"Burry deep-value: Score {score:.1f}/{max_score} ({score_ratio:.1%}). "
+            f"Value: {value.get('score', 0):.1f}, Balance: {balance.get('score', 0):.1f}, "
+            f"Insider: {insider.get('score', 0):.1f}, Contrarian: {contrarian.get('score', 0):.1f}. "
+            f"{signal.capitalize()} ({confidence}%)"
+        )
+        
+        return MichaelBurrySignal(
+            signal=signal,
+            confidence=float(confidence),
+            reasoning=reasoning
+        )
+
     return call_llm(
         prompt=prompt,
         pydantic_model=MichaelBurrySignal,
         agent_name=agent_id,
         state=state,
         default_factory=create_default_michael_burry_signal,
+        rule_based_factory=create_rule_based_michael_burry_signal,
     )

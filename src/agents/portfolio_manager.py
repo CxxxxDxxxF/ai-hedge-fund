@@ -54,9 +54,25 @@ def portfolio_management_agent(state: AgentState, agent_id: str = "portfolio_man
             max_shares[ticker] = 0
 
         # Compress analyst signals to {sig, conf}
+        # Filter to only use 5 core analysts (10-agent restructure)
+        # Core analysts: warren_buffett, peter_lynch, aswath_damodaran, momentum, mean_reversion
+        CORE_ANALYSTS = {
+            "warren_buffett_agent",
+            "peter_lynch_agent",
+            "aswath_damodaran_agent",
+            "momentum_agent",
+            "mean_reversion_agent",
+        }
+        
         ticker_signals = {}
         for agent, signals in analyst_signals.items():
-            if not agent.startswith("risk_management_agent") and ticker in signals:
+            # Only include core analysts (exclude system agents and advisory agents)
+            if (agent in CORE_ANALYSTS
+                and not agent.startswith("risk_management_agent")
+                and not agent.startswith("portfolio_manager")
+                and not agent.startswith("risk_budget_agent")
+                and not agent.startswith("portfolio_allocator_agent")
+                and ticker in signals):
                 sig = signals[ticker].get("signal")
                 conf = signals[ticker].get("confidence")
                 if sig is not None and conf is not None:
@@ -84,6 +100,11 @@ def portfolio_management_agent(state: AgentState, agent_id: str = "portfolio_man
     if state["metadata"]["show_reasoning"]:
         show_agent_reasoning({ticker: decision.model_dump() for ticker, decision in result.decisions.items()},
                              "Portfolio Manager")
+
+    # Store decisions in state for Risk Budget agent to read
+    state["data"]["portfolio_decisions"] = {
+        ticker: decision.model_dump() for ticker, decision in result.decisions.items()
+    }
 
     progress.update_status(agent_id, None, "Done")
 
@@ -174,6 +195,159 @@ def _compact_signals(signals_by_ticker: dict[str, dict]) -> dict[str, dict]:
     return out
 
 
+def generate_trading_decision_rule_based(
+        tickers: list[str],
+        signals_by_ticker: dict[str, dict],
+        current_prices: dict[str, float],
+        max_shares: dict[str, int],
+        portfolio: dict[str, float],
+        prefilled_decisions: dict[str, PortfolioDecision],
+        tickers_for_llm: list[str],
+        allowed_actions_full: dict[str, dict[str, int]],
+        state: AgentState,
+) -> PortfolioManagerOutput:
+    """
+    Generate deterministic trading decisions based on signal aggregation with explicit weights.
+    
+    10-Agent Restructure: Uses only 5 core analysts with explicit weights:
+    - Value Composite (warren_buffett): 30%
+    - Growth Composite (peter_lynch): 25%
+    - Valuation (aswath_damodaran): 20%
+    - Momentum: 15% (regime-adjusted)
+    - Mean Reversion: 10% (regime-adjusted)
+    """
+    decisions = dict(prefilled_decisions)
+    
+    # Explicit weights for core analysts (10-agent restructure)
+    ANALYST_WEIGHTS = {
+        "warren_buffett_agent": 0.30,
+        "peter_lynch_agent": 0.25,
+        "aswath_damodaran_agent": 0.20,
+        "momentum_agent": 0.15,
+        "mean_reversion_agent": 0.10,
+    }
+    
+    for ticker in tickers_for_llm:
+        signals = signals_by_ticker.get(ticker, {})
+        allowed = allowed_actions_full.get(ticker, {"hold": 0})
+        
+        # Get market regime weights if available (advisory from Market Regime Analyst)
+        market_regime_data = state["data"].get("market_regime", {})
+        ticker_regime = market_regime_data.get(ticker, {})
+        regime_weights = ticker_regime.get("weights", {})
+        
+        # Aggregate signals with explicit weights and regime-based adjustments
+        bullish_weighted_sum = 0.0
+        bearish_weighted_sum = 0.0
+        neutral_weighted_sum = 0.0
+        total_weight = 0.0
+        weighted_confidence_sum = 0.0
+        
+        bullish_count = 0
+        bearish_count = 0
+        neutral_count = 0
+        
+        for agent, signal_data in signals.items():
+            sig = signal_data.get("sig") or signal_data.get("signal")
+            conf = signal_data.get("conf") if "conf" in signal_data else signal_data.get("confidence", 50)
+            
+            # Get base weight for this agent
+            base_weight = ANALYST_WEIGHTS.get(agent, 0.0)
+            if base_weight == 0.0:
+                continue  # Skip agents not in core 5
+            
+            # Apply regime weights to Momentum and Mean Reversion
+            final_weight = base_weight
+            if agent == "momentum_agent" and "momentum" in regime_weights:
+                final_weight = base_weight * regime_weights["momentum"]
+            elif agent == "mean_reversion_agent" and "mean_reversion" in regime_weights:
+                final_weight = base_weight * regime_weights["mean_reversion"]
+            
+            # Weighted signal contribution (convert signal to numeric: bullish=1, bearish=-1, neutral=0)
+            if sig == "bullish":
+                bullish_weighted_sum += final_weight
+                bullish_count += 1
+            elif sig == "bearish":
+                bearish_weighted_sum += final_weight
+                bearish_count += 1
+            elif sig == "neutral":
+                neutral_weighted_sum += final_weight
+                neutral_count += 1
+            
+            # Weighted confidence contribution
+            weighted_conf = conf * final_weight
+            weighted_confidence_sum += weighted_conf
+            total_weight += final_weight
+        
+        # Calculate weighted average confidence
+        if total_weight > 0:
+            avg_confidence = int(weighted_confidence_sum / total_weight)
+        else:
+            avg_confidence = 50
+        
+        # Build regime info string
+        regime_info = ""
+        if regime_weights:
+            regime_info = f" (regime-adjusted: Momentum×{regime_weights.get('momentum', 1.0):.1f}, MR×{regime_weights.get('mean_reversion', 1.0):.1f})"
+        
+        # Rule-based decision logic using weighted signals
+        # Decision based on weighted signal strength, not just counts
+        net_weighted_signal = bullish_weighted_sum - bearish_weighted_sum
+        
+        if net_weighted_signal > 0.1 and bullish_count > 0:  # Weighted bullish
+            # More bullish signals - try to buy
+            if "buy" in allowed and allowed["buy"] > 0:
+                qty = min(allowed["buy"], max_shares.get(ticker, 0))
+                decisions[ticker] = PortfolioDecision(
+                    action="buy",
+                    quantity=qty,
+                    confidence=int(avg_confidence),
+                    reasoning=f"Bullish weighted signal (net: {net_weighted_signal:.2f}, {bullish_count}B/{bearish_count}S){regime_info}"
+                )
+            else:
+                decisions[ticker] = PortfolioDecision(
+                    action="hold",
+                    quantity=0,
+                    confidence=int(avg_confidence),
+                    reasoning=f"Bullish but no buy capacity{regime_info}"
+                )
+        elif net_weighted_signal < -0.1 and bearish_count > 0:  # Weighted bearish
+            # More bearish signals - try to sell or short
+            if "sell" in allowed and allowed["sell"] > 0:
+                qty = allowed["sell"]
+                decisions[ticker] = PortfolioDecision(
+                    action="sell",
+                    quantity=qty,
+                    confidence=int(avg_confidence),
+                    reasoning=f"Bearish consensus ({bearish_count} bearish, {bullish_count} bullish){regime_info}"
+                )
+            elif "short" in allowed and allowed["short"] > 0:
+                qty = min(allowed["short"], max_shares.get(ticker, 0))
+                decisions[ticker] = PortfolioDecision(
+                    action="short",
+                    quantity=qty,
+                    confidence=int(avg_confidence),
+                    reasoning=f"Bearish consensus ({bearish_count} bearish, {bullish_count} bullish){regime_info}"
+                )
+            else:
+                decisions[ticker] = PortfolioDecision(
+                    action="hold",
+                    quantity=0,
+                    confidence=int(avg_confidence),
+                    reasoning=f"Bearish weighted signal but no sell/short capacity (net: {net_weighted_signal:.2f}){regime_info}"
+                )
+        else:
+            # Neutral or mixed signals - hold
+            decisions[ticker] = PortfolioDecision(
+                action="hold",
+                quantity=0,
+                confidence=int(avg_confidence) if signal_count > 0 else 50,
+                reasoning=f"Mixed/neutral signals (net: {net_weighted_signal:.2f}, {bullish_count}B/{bearish_count}S/{neutral_count}N){regime_info}"
+            )
+    
+    return PortfolioManagerOutput(decisions=decisions)
+
+
 def generate_trading_decision(
         tickers: list[str],
         signals_by_ticker: dict[str, dict],
@@ -248,12 +422,27 @@ def generate_trading_decision(
             )
         return PortfolioManagerOutput(decisions=decisions)
 
+    # Rule-based factory for deterministic mode
+    def create_rule_based_portfolio_output():
+        return generate_trading_decision_rule_based(
+            tickers=tickers,
+            signals_by_ticker=signals_by_ticker,
+            current_prices=current_prices,
+            max_shares=max_shares,
+            portfolio=portfolio,
+            prefilled_decisions=prefilled_decisions,
+            tickers_for_llm=tickers_for_llm,
+            allowed_actions_full=allowed_actions_full,
+            state=state,
+        )
+
     llm_out = call_llm(
         prompt=prompt,
         pydantic_model=PortfolioManagerOutput,
         agent_name=agent_id,
         state=state,
         default_factory=create_default_portfolio_output,
+        rule_based_factory=create_rule_based_portfolio_output,
     )
 
     # Merge prefilled holds with LLM results

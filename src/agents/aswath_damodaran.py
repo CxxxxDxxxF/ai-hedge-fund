@@ -410,10 +410,64 @@ def generate_damodaran_output(
             reasoning="Parsing error; defaulting to neutral",
         )
 
+    def create_rule_based_damodaran_signal():
+        """Deterministic Damodaran signal based on valuation analysis."""
+        ticker_data = analysis_data.get(ticker, {})
+        signal = ticker_data.get("signal", "neutral")
+        score = ticker_data.get("score")
+        max_score = ticker_data.get("max_score")
+        mos = ticker_data.get("margin_of_safety", 0)
+        
+        # Guard against None values - missing financial data should not crash the fund
+        # If critical data is missing, return neutral with reduced confidence
+        if score is None or max_score is None or max_score == 0:
+            return AswathDamodaranSignal(
+                signal="neutral",
+                confidence=50,
+                reasoning="Damodaran valuation unavailable due to missing financial inputs"
+            )
+        
+        # Safe defaults for partial scoring (should not reach here if None, but defensive)
+        score_safe = score if score is not None else 0
+        max_score_safe = max_score if max_score is not None else 1
+        score_ratio = score_safe / max_score_safe
+        
+        # Calculate confidence based on score ratio and margin of safety
+        if signal == "bullish":
+            confidence = min(85, 50 + int(score_ratio * 50))
+            if mos and mos > 0.2:
+                confidence = min(90, confidence + 5)  # Boost for high margin of safety
+        elif signal == "bearish":
+            confidence = min(85, 50 + int((1 - score_ratio) * 50))
+        else:
+            confidence = 50
+        
+        # Build reasoning from analysis components (with safe defaults)
+        growth = ticker_data.get("growth_analysis", {})
+        intrinsic = ticker_data.get("intrinsic_val_analysis", {})
+        
+        # Ensure all values are numeric before formatting (defensive programming)
+        mos_safe = mos if mos is not None else 0.0
+        growth_score = growth.get('score', 0) if growth else 0
+        intrinsic_score = intrinsic.get('score', 0) if intrinsic else 0
+        
+        reasoning = (
+            f"Damodaran valuation: Score {score_safe:.1f}/{max_score_safe} ({score_ratio:.1%}), "
+            f"MoS: {mos_safe:.1%}. Growth: {growth_score:.1f}, "
+            f"Intrinsic: {intrinsic_score:.1f}. {signal.capitalize()} ({confidence}%)"
+        )
+        
+        return AswathDamodaranSignal(
+            signal=signal,
+            confidence=float(confidence),
+            reasoning=reasoning
+        )
+
     return call_llm(
         prompt=prompt,
         pydantic_model=AswathDamodaranSignal,
         agent_name=agent_id,
         state=state,
         default_factory=default_signal,
+        rule_based_factory=create_rule_based_damodaran_signal,
     )

@@ -6,7 +6,8 @@ from langgraph.graph import END, StateGraph
 from colorama import Fore, Style, init
 import questionary
 from src.agents.portfolio_manager import portfolio_management_agent
-from src.agents.risk_manager import risk_management_agent
+from src.agents.risk_budget import risk_budget_agent
+from src.agents.portfolio_allocator import portfolio_allocator_agent
 from src.graph.state import AgentState
 from src.utils.display import print_trading_output
 from src.utils.analysts import ANALYST_ORDER, get_analyst_nodes
@@ -86,6 +87,10 @@ def run_hedge_fund(
         return {
             "decisions": parse_hedge_fund_response(final_state["messages"][-1].content),
             "analyst_signals": final_state["data"]["analyst_signals"],
+            "market_regime": final_state["data"].get("market_regime", {}),
+            "risk_budget": final_state["data"].get("risk_budget", {}),
+            "portfolio_decisions": final_state["data"].get("portfolio_decisions", {}),
+            "portfolio_allocation": final_state["data"].get("portfolio_allocation", {}),
         }
     finally:
         # Stop progress tracking
@@ -108,23 +113,71 @@ def create_workflow(selected_analysts=None):
     # Default to all analysts if none selected
     if selected_analysts is None:
         selected_analysts = list(analyst_nodes.keys())
-    # Add selected analyst nodes
+    
+    # Separate regular analysts from system analysts that need special ordering
+    # 10-agent restructure: Only Market Regime and Performance Auditor are system analysts
+    system_analysts = {"performance_auditor", "market_regime"}
+    regular_analysts = [a for a in selected_analysts if a not in system_analysts]
+    has_performance_auditor = "performance_auditor" in selected_analysts
+    has_market_regime = "market_regime" in selected_analysts
+    
+    # Add all selected analyst nodes
     for analyst_key in selected_analysts:
         node_name, node_func = analyst_nodes[analyst_key]
         workflow.add_node(node_name, node_func)
-        workflow.add_edge("start_node", node_name)
+        # Regular analysts connect from start_node
+        if analyst_key not in system_analysts:
+            workflow.add_edge("start_node", node_name)
 
-    # Always add risk and portfolio management
-    workflow.add_node("risk_management_agent", risk_management_agent)
+    # Always add risk budget, portfolio management, and portfolio allocator
+    # Note: Risk Manager merged into Portfolio Allocator (10-agent restructure)
+    workflow.add_node("risk_budget_agent", risk_budget_agent)
     workflow.add_node("portfolio_manager", portfolio_management_agent)
+    workflow.add_node("portfolio_allocator_agent", portfolio_allocator_agent)
 
-    # Connect selected analysts to risk management
-    for analyst_key in selected_analysts:
-        node_name = analyst_nodes[analyst_key][0]
-        workflow.add_edge(node_name, "risk_management_agent")
-
-    workflow.add_edge("risk_management_agent", "portfolio_manager")
-    workflow.add_edge("portfolio_manager", END)
+    # Connect analysts in correct order (10-agent restructure):
+    # Core Analysts → Market Regime (if selected) → Performance Auditor → Portfolio Manager → Risk Budget → Portfolio Allocator → END
+    
+    # Market Regime depends on momentum and mean_reversion agents
+    if has_market_regime:
+        market_regime_node = analyst_nodes["market_regime"][0]
+        # Connect momentum and mean_reversion to market_regime if they exist
+        if "momentum" in selected_analysts:
+            momentum_node = analyst_nodes["momentum"][0]
+            workflow.add_edge(momentum_node, market_regime_node)
+        if "mean_reversion" in selected_analysts:
+            mean_reversion_node = analyst_nodes["mean_reversion"][0]
+            workflow.add_edge(mean_reversion_node, market_regime_node)
+        # If neither exists, connect from start_node
+        if "momentum" not in selected_analysts and "mean_reversion" not in selected_analysts:
+            workflow.add_edge("start_node", market_regime_node)
+    
+    if has_performance_auditor:
+        # Connect all regular analysts to performance auditor
+        perf_auditor_node = analyst_nodes["performance_auditor"][0]
+        for analyst_key in regular_analysts:
+            node_name = analyst_nodes[analyst_key][0]
+            workflow.add_edge(node_name, perf_auditor_node)
+        
+        # Market Regime → Performance Auditor (if both exist)
+        if has_market_regime:
+            workflow.add_edge(market_regime_node, perf_auditor_node)
+        
+        # Performance Auditor → Portfolio Manager (10-agent restructure: removed Conflict Arbiter and Risk Manager)
+        workflow.add_edge(perf_auditor_node, "portfolio_manager")
+    else:
+        # No Performance Auditor: Regular analysts → Portfolio Manager
+        for analyst_key in regular_analysts:
+            node_name = analyst_nodes[analyst_key][0]
+            workflow.add_edge(node_name, "portfolio_manager")
+        # Market Regime → Portfolio Manager (if no Performance Auditor)
+        if has_market_regime:
+            workflow.add_edge(market_regime_node, "portfolio_manager")
+    
+    # Connect Portfolio Manager → Risk Budget → Portfolio Allocator → END
+    workflow.add_edge("portfolio_manager", "risk_budget_agent")
+    workflow.add_edge("risk_budget_agent", "portfolio_allocator_agent")
+    workflow.add_edge("portfolio_allocator_agent", END)
 
     workflow.set_entry_point("start_node")
     return workflow

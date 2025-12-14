@@ -594,10 +594,52 @@ def generate_fisher_output(
             reasoning="Error in analysis, defaulting to neutral"
         )
 
+    def create_rule_based_phil_fisher_signal():
+        """Deterministic Phil Fisher signal based on growth/quality analysis."""
+        ticker_data = analysis_data.get(ticker, {})
+        signal = ticker_data.get("signal", "neutral")
+        score = ticker_data.get("score", 0)
+        max_score = ticker_data.get("max_score", 10)
+        
+        if max_score == 0:
+            return PhilFisherSignal(
+                signal="neutral",
+                confidence=50,
+                reasoning="Insufficient data for Fisher analysis"
+            )
+        
+        score_ratio = score / max_score
+        
+        # Calculate confidence based on score ratio
+        if signal == "bullish":
+            confidence = min(85, 50 + int(score_ratio * 50))
+        elif signal == "bearish":
+            confidence = min(85, 50 + int((1 - score_ratio) * 50))
+        else:
+            confidence = 50
+        
+        # Build reasoning from analysis components
+        growth = ticker_data.get("growth_analysis", {})
+        margins = ticker_data.get("margins_analysis", {})
+        quality = ticker_data.get("quality_analysis", {})
+        
+        reasoning = (
+            f"Fisher growth: Score {score:.1f}/{max_score} ({score_ratio:.1%}). "
+            f"Growth: {growth.get('score', 0):.1f}, Margins: {margins.get('score', 0):.1f}, "
+            f"Quality: {quality.get('score', 0):.1f}. {signal.capitalize()} ({confidence}%)"
+        )
+        
+        return PhilFisherSignal(
+            signal=signal,
+            confidence=float(confidence),
+            reasoning=reasoning
+        )
+
     return call_llm(
         prompt=prompt,
         pydantic_model=PhilFisherSignal,
         state=state,
         agent_name=agent_id,
         default_factory=create_default_signal,
+        rule_based_factory=create_rule_based_phil_fisher_signal,
     )

@@ -339,10 +339,55 @@ def generate_graham_output(
     def create_default_ben_graham_signal():
         return BenGrahamSignal(signal="neutral", confidence=0.0, reasoning="Error in generating analysis; defaulting to neutral.")
 
+    def create_rule_based_ben_graham_signal():
+        """Deterministic Ben Graham signal based on analysis scores."""
+        ticker_data = analysis_data.get(ticker, {})
+        total_score = ticker_data.get("score", 0)
+        max_score = ticker_data.get("max_score", 15)
+        
+        if max_score == 0:
+            return BenGrahamSignal(
+                signal="neutral",
+                confidence=50,
+                reasoning="Insufficient data for Graham analysis"
+            )
+        
+        score_ratio = total_score / max_score
+        
+        # Determine signal based on score ratio
+        if score_ratio >= 0.7:
+            signal = "bullish"
+            confidence = min(85, 50 + int(score_ratio * 50))
+        elif score_ratio <= 0.3:
+            signal = "bearish"
+            confidence = min(85, 50 + int((1 - score_ratio) * 50))
+        else:
+            signal = "neutral"
+            confidence = 50
+        
+        # Build reasoning from analysis components
+        earnings = ticker_data.get("earnings_analysis", {})
+        strength = ticker_data.get("strength_analysis", {})
+        valuation = ticker_data.get("valuation_analysis", {})
+        
+        reasoning = (
+            f"Graham analysis: Score {total_score:.1f}/{max_score} ({score_ratio:.1%}). "
+            f"Earnings: {earnings.get('score', 0)}/5, Strength: {strength.get('score', 0)}/5, "
+            f"Valuation: {valuation.get('score', 0)}/5. "
+            f"Signal: {signal} (confidence {confidence}%)"
+        )
+        
+        return BenGrahamSignal(
+            signal=signal,
+            confidence=float(confidence),
+            reasoning=reasoning
+        )
+
     return call_llm(
         prompt=prompt,
         pydantic_model=BenGrahamSignal,
         agent_name=agent_id,
         state=state,
         default_factory=create_default_ben_graham_signal,
+        rule_based_factory=create_rule_based_ben_graham_signal,
     )

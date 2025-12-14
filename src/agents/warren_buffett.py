@@ -3,6 +3,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, Field
 import json
+import math
 from typing_extensions import Literal
 from src.tools.api import get_financial_metrics, get_market_cap, search_line_items
 from src.utils.llm import call_llm
@@ -17,7 +18,16 @@ class WarrenBuffettSignal(BaseModel):
 
 
 def warren_buffett_agent(state: AgentState, agent_id: str = "warren_buffett_agent"):
-    """Analyzes stocks using Buffett's principles and LLM reasoning."""
+    """
+    Value Composite Analyst - Combines multiple value investing principles:
+    - Buffett: Quality businesses, moat, management, pricing power
+    - Graham: Margin of safety, balance sheet strength, earnings stability
+    - Munger: Quality focus, predictability, rational thinking
+    - Burry: Deep value metrics, cash/debt ratios, FCF yield
+    - Pabrai: Dhandho principles (low risk, high reward)
+    
+    Outputs ONE signal with confidence based on composite scoring.
+    """
     data = state["data"]
     end_date = data["end_date"]
     tickers = data["tickers"]
@@ -58,50 +68,64 @@ def warren_buffett_agent(state: AgentState, agent_id: str = "warren_buffett_agen
         # Get current market cap
         market_cap = get_market_cap(ticker, end_date, api_key=api_key)
 
-        progress.update_status(agent_id, ticker, "Analyzing fundamentals")
-        # Analyze fundamentals
-        fundamental_analysis = analyze_fundamentals(metrics)
-
-        progress.update_status(agent_id, ticker, "Analyzing consistency")
-        consistency_analysis = analyze_consistency(financial_line_items)
-
-        progress.update_status(agent_id, ticker, "Analyzing competitive moat")
-        moat_analysis = analyze_moat(metrics)
-
-        progress.update_status(agent_id, ticker, "Analyzing pricing power")
-        pricing_power_analysis = analyze_pricing_power(financial_line_items, metrics)
-
-        progress.update_status(agent_id, ticker, "Analyzing book value growth")
-        book_value_analysis = analyze_book_value_growth(financial_line_items)
-
-        progress.update_status(agent_id, ticker, "Analyzing management quality")
-        mgmt_analysis = analyze_management_quality(financial_line_items)
-
-        progress.update_status(agent_id, ticker, "Calculating intrinsic value")
-        intrinsic_value_analysis = calculate_intrinsic_value(financial_line_items)
-
-        # Calculate total score without circle of competence (LLM will handle that)
+        progress.update_status(agent_id, ticker, "Analyzing value composite factors")
+        
+        # VALUE COMPOSITE FACTOR ANALYSIS
+        # Factor 1: Valuation Margin of Safety (Graham + Buffett)
+        valuation_margin = analyze_valuation_margin_of_safety(financial_line_items, market_cap, metrics, ticker)
+        
+        # Factor 2: Balance Sheet Strength (Graham + Burry)
+        balance_sheet_strength = analyze_balance_sheet_strength(financial_line_items, metrics)
+        
+        # Factor 3: Earnings Quality (Graham + Buffett)
+        earnings_quality = analyze_earnings_quality(financial_line_items, metrics)
+        
+        # Factor 4: Conservative Growth (Buffett + Munger)
+        conservative_growth = analyze_conservative_growth(financial_line_items)
+        
+        # Factor 5: Business Quality (Buffett + Munger)
+        business_quality = analyze_business_quality(metrics, financial_line_items)
+        
+        # Composite scoring with explicit weights
+        # Weights reflect importance: Valuation (30%), Quality (25%), Balance Sheet (20%), Earnings (15%), Growth (10%)
+        COMPOSITE_WEIGHTS = {
+            "valuation_margin": 0.30,
+            "business_quality": 0.25,
+            "balance_sheet_strength": 0.20,
+            "earnings_quality": 0.15,
+            "conservative_growth": 0.10,
+        }
+        
+        # Calculate weighted composite score
         total_score = (
-                fundamental_analysis["score"] +
-                consistency_analysis["score"] +
-                moat_analysis["score"] +
-                mgmt_analysis["score"] +
-                pricing_power_analysis["score"] +
-                book_value_analysis["score"]
+            valuation_margin["score"] * COMPOSITE_WEIGHTS["valuation_margin"] +
+            business_quality["score"] * COMPOSITE_WEIGHTS["business_quality"] +
+            balance_sheet_strength["score"] * COMPOSITE_WEIGHTS["balance_sheet_strength"] +
+            earnings_quality["score"] * COMPOSITE_WEIGHTS["earnings_quality"] +
+            conservative_growth["score"] * COMPOSITE_WEIGHTS["conservative_growth"]
         )
-
-        # Update max possible score calculation
+        
+        # Max possible score (all factors at max)
         max_possible_score = (
-                10 +  # fundamental_analysis (ROE, debt, margins, current ratio)
-                moat_analysis["max_score"] +
-                mgmt_analysis["max_score"] +
-                5 +  # pricing_power (0-5)
-                5  # book_value_growth (0-5)
+            valuation_margin["max_score"] * COMPOSITE_WEIGHTS["valuation_margin"] +
+            business_quality["max_score"] * COMPOSITE_WEIGHTS["business_quality"] +
+            balance_sheet_strength["max_score"] * COMPOSITE_WEIGHTS["balance_sheet_strength"] +
+            earnings_quality["max_score"] * COMPOSITE_WEIGHTS["earnings_quality"] +
+            conservative_growth["max_score"] * COMPOSITE_WEIGHTS["conservative_growth"]
         )
+        
+        # Legacy analysis (for backward compatibility and LLM reasoning)
+        fundamental_analysis = analyze_fundamentals(metrics)
+        consistency_analysis = analyze_consistency(financial_line_items)
+        moat_analysis = analyze_moat(metrics)
+        pricing_power_analysis = analyze_pricing_power(financial_line_items, metrics)
+        book_value_analysis = analyze_book_value_growth(financial_line_items)
+        mgmt_analysis = analyze_management_quality(financial_line_items)
+        intrinsic_value_analysis = calculate_intrinsic_value(financial_line_items)
 
         # Add margin of safety analysis if we have both intrinsic value and current price
         margin_of_safety = None
-        intrinsic_value = intrinsic_value_analysis["intrinsic_value"]
+        intrinsic_value = intrinsic_value_analysis.get("intrinsic_value")
         if intrinsic_value and market_cap:
             margin_of_safety = (intrinsic_value - market_cap) / market_cap
 
@@ -110,6 +134,13 @@ def warren_buffett_agent(state: AgentState, agent_id: str = "warren_buffett_agen
             "ticker": ticker,
             "score": total_score,
             "max_score": max_possible_score,
+            # Composite factors (primary)
+            "valuation_margin": valuation_margin,
+            "balance_sheet_strength": balance_sheet_strength,
+            "earnings_quality": earnings_quality,
+            "conservative_growth": conservative_growth,
+            "business_quality": business_quality,
+            # Legacy analysis (for LLM context)
             "fundamental_analysis": fundamental_analysis,
             "consistency_analysis": consistency_analysis,
             "moat_analysis": moat_analysis,
@@ -743,6 +774,455 @@ def analyze_pricing_power(financial_line_items: list, metrics: list) -> dict[str
     }
 
 
+def analyze_valuation_margin_of_safety(
+    financial_line_items: list,
+    market_cap: float | None,
+    metrics: list,
+    ticker: str = "",
+) -> dict[str, any]:
+    """
+    Factor 1: Valuation Margin of Safety (30% weight)
+    Combines Graham (Graham Number, net-net) + Buffett (intrinsic value discount).
+    """
+    if not financial_line_items or not market_cap or market_cap <= 0:
+        return {"score": 0, "max_score": 10, "details": "Insufficient data for valuation margin"}
+    
+    score = 0
+    details = []
+    latest = financial_line_items[0]
+    
+    # Graham Number: sqrt(22.5 * EPS * BVPS)
+    eps = latest.earnings_per_share if hasattr(latest, 'earnings_per_share') else None
+    bvps = (latest.shareholders_equity / latest.outstanding_shares) if (hasattr(latest, 'shareholders_equity') and hasattr(latest, 'outstanding_shares') and latest.outstanding_shares > 0) else None
+    
+    graham_number = None
+    if eps and eps > 0 and bvps and bvps > 0:
+        graham_number = math.sqrt(22.5 * eps * bvps)
+        price_per_share = market_cap / latest.outstanding_shares
+        if price_per_share > 0:
+            graham_margin = (graham_number - price_per_share) / price_per_share
+            if graham_margin > 0.5:
+                score += 4
+                details.append(f"Graham Number: {graham_margin:.0%} margin (excellent)")
+            elif graham_margin > 0.2:
+                score += 2
+                details.append(f"Graham Number: {graham_margin:.0%} margin (good)")
+            elif graham_margin > 0:
+                score += 1
+                details.append(f"Graham Number: {graham_margin:.0%} margin (moderate)")
+            else:
+                details.append(f"Graham Number: Overvalued by {abs(graham_margin):.0%}")
+    
+    # Net-Net Current Asset Value (Graham)
+    current_assets = latest.current_assets if hasattr(latest, 'current_assets') else 0
+    total_liabilities = latest.total_liabilities if hasattr(latest, 'total_liabilities') else 0
+    if current_assets > 0 and latest.outstanding_shares > 0:
+        ncav = current_assets - total_liabilities
+        ncav_per_share = ncav / latest.outstanding_shares
+        price_per_share = market_cap / latest.outstanding_shares
+        if ncav > market_cap:
+            score += 3
+            details.append("Net-Net: NCAV > Market Cap (deep value)")
+        elif ncav_per_share >= price_per_share * 0.67:
+            score += 2
+            details.append("Net-Net: NCAV >= 67% of price (moderate discount)")
+    
+    # Intrinsic Value Discount (Buffett)
+    intrinsic_value_analysis = calculate_intrinsic_value(financial_line_items)
+    intrinsic_value = intrinsic_value_analysis.get("intrinsic_value")
+    if intrinsic_value and market_cap > 0:
+        iv_discount = (intrinsic_value - market_cap) / market_cap
+        if iv_discount > 0.3:
+            score += 3
+            details.append(f"Intrinsic Value: {iv_discount:.0%} discount (excellent)")
+        elif iv_discount > 0.1:
+            score += 2
+            details.append(f"Intrinsic Value: {iv_discount:.0%} discount (good)")
+        elif iv_discount > 0:
+            score += 1
+            details.append(f"Intrinsic Value: {iv_discount:.0%} discount (moderate)")
+        else:
+            details.append(f"Intrinsic Value: Overvalued by {abs(iv_discount):.0%}")
+    
+    return {"score": min(score, 10), "max_score": 10, "details": "; ".join(details) if details else "Limited valuation data"}
+
+
+def analyze_balance_sheet_strength(
+    financial_line_items: list,
+    metrics: list,
+) -> dict[str, any]:
+    """
+    Factor 2: Balance Sheet Strength (20% weight)
+    Combines Graham (current ratio, debt ratio) + Burry (cash/debt, FCF yield).
+    """
+    if not financial_line_items:
+        return {"score": 0, "max_score": 10, "details": "Insufficient data for balance sheet analysis"}
+    
+    score = 0
+    details = []
+    latest = financial_line_items[0]
+    latest_metrics = metrics[0] if metrics else None
+    
+    # Current Ratio (Graham: >= 2.0 is strong)
+    current_assets = latest.current_assets if hasattr(latest, 'current_assets') else 0
+    current_liabilities = latest.current_liabilities if hasattr(latest, 'current_liabilities') else 0
+    if current_liabilities > 0:
+        current_ratio = current_assets / current_liabilities
+        if current_ratio >= 2.0:
+            score += 3
+            details.append(f"Current ratio: {current_ratio:.2f} (Graham strong)")
+        elif current_ratio >= 1.5:
+            score += 2
+            details.append(f"Current ratio: {current_ratio:.2f} (moderate)")
+        elif current_ratio >= 1.0:
+            score += 1
+            details.append(f"Current ratio: {current_ratio:.2f} (adequate)")
+        else:
+            details.append(f"Current ratio: {current_ratio:.2f} (weak)")
+    
+    # Debt-to-Equity (Graham: < 0.5 conservative, Burry: < 0.3 very strong)
+    if latest_metrics and latest_metrics.debt_to_equity is not None:
+        de_ratio = latest_metrics.debt_to_equity
+        if de_ratio < 0.3:
+            score += 3
+            details.append(f"Debt/Equity: {de_ratio:.2f} (very conservative)")
+        elif de_ratio < 0.5:
+            score += 2
+            details.append(f"Debt/Equity: {de_ratio:.2f} (Graham conservative)")
+        elif de_ratio < 1.0:
+            score += 1
+            details.append(f"Debt/Equity: {de_ratio:.2f} (moderate)")
+        else:
+            details.append(f"Debt/Equity: {de_ratio:.2f} (high)")
+    
+    # Cash/Debt Ratio (Burry: > 1.5 is strong)
+    cash = latest.cash_and_equivalents if hasattr(latest, 'cash_and_equivalents') else 0
+    debt = latest.total_debt if hasattr(latest, 'total_debt') else 0
+    if debt > 0:
+        cash_debt_ratio = cash / debt
+        if cash_debt_ratio > 1.5:
+            score += 2
+            details.append(f"Cash/Debt: {cash_debt_ratio:.2f} (Burry strong)")
+        elif cash_debt_ratio > 1.0:
+            score += 1
+            details.append(f"Cash/Debt: {cash_debt_ratio:.2f} (adequate)")
+        else:
+            details.append(f"Cash/Debt: {cash_debt_ratio:.2f} (low)")
+    elif debt == 0 and cash > 0:
+        score += 2
+        details.append("No debt, cash positive (excellent)")
+    
+    # FCF Yield (Burry: > 10% is attractive)
+    # Note: market_cap not available in this function scope
+    # FCF yield is a valuation metric, not balance sheet strength
+    # (already covered in valuation_margin_of_safety factor via intrinsic value)
+    
+    return {"score": min(score, 10), "max_score": 10, "details": "; ".join(details) if details else "Limited balance sheet data"}
+
+
+def analyze_earnings_quality(
+    financial_line_items: list,
+    metrics: list,
+) -> dict[str, any]:
+    """
+    Factor 3: Earnings Quality (15% weight)
+    Combines Graham (earnings stability) + Buffett (consistency, FCF conversion).
+    """
+    if not financial_line_items or len(financial_line_items) < 3:
+        return {"score": 0, "max_score": 10, "details": "Insufficient data for earnings quality"}
+    
+    score = 0
+    details = []
+    
+    # Earnings Stability (Graham: 5+ years positive)
+    eps_values = [item.earnings_per_share for item in financial_line_items if hasattr(item, 'earnings_per_share') and item.earnings_per_share is not None]
+    if len(eps_values) >= 3:
+        positive_years = sum(1 for e in eps_values if e > 0)
+        if positive_years == len(eps_values):
+            score += 3
+            details.append(f"EPS: {positive_years}/{len(eps_values)} positive (Graham stable)")
+        elif positive_years >= len(eps_values) * 0.8:
+            score += 2
+            details.append(f"EPS: {positive_years}/{len(eps_values)} positive (mostly stable)")
+        else:
+            details.append(f"EPS: {positive_years}/{len(eps_values)} positive (unstable)")
+    
+    # Earnings Consistency (Buffett: growing trend)
+    if len(eps_values) >= 3:
+        if eps_values[0] > eps_values[-1]:
+            score += 2
+            details.append("EPS: Growing trend (Buffett consistent)")
+        elif eps_values[0] == eps_values[-1]:
+            score += 1
+            details.append("EPS: Stable (no growth)")
+        else:
+            details.append("EPS: Declining trend")
+    
+    # FCF Conversion (Buffett: FCF should be substantial portion of earnings)
+    net_incomes = [item.net_income for item in financial_line_items if hasattr(item, 'net_income') and item.net_income is not None]
+    fcf_values = [item.free_cash_flow for item in financial_line_items if hasattr(item, 'free_cash_flow') and item.free_cash_flow is not None]
+    if len(net_incomes) >= 2 and len(fcf_values) >= 2:
+        latest_ni = net_incomes[0]
+        latest_fcf = fcf_values[0]
+        if latest_ni > 0:
+            fcf_conversion = latest_fcf / latest_ni
+            if fcf_conversion > 0.8:
+                score += 3
+                details.append(f"FCF Conversion: {fcf_conversion:.0%} (excellent quality)")
+            elif fcf_conversion > 0.5:
+                score += 2
+                details.append(f"FCF Conversion: {fcf_conversion:.0%} (good quality)")
+            elif fcf_conversion > 0.3:
+                score += 1
+                details.append(f"FCF Conversion: {fcf_conversion:.0%} (moderate)")
+            else:
+                details.append(f"FCF Conversion: {fcf_conversion:.0%} (poor quality)")
+    
+    # Earnings Growth Consistency (Pabrai: consistent growth is low risk)
+    if len(eps_values) >= 4:
+        growth_rates = []
+        for i in range(len(eps_values) - 1):
+            if eps_values[i+1] > 0:
+                growth = (eps_values[i] - eps_values[i+1]) / abs(eps_values[i+1])
+                growth_rates.append(growth)
+        if len(growth_rates) >= 2:
+            avg_growth = sum(growth_rates) / len(growth_rates)
+            if avg_growth > 0.1 and all(g > 0 for g in growth_rates):
+                score += 2
+                details.append(f"EPS Growth: {avg_growth:.0%} avg, all positive (Pabrai low risk)")
+    
+    return {"score": min(score, 10), "max_score": 10, "details": "; ".join(details) if details else "Limited earnings data"}
+
+
+def analyze_conservative_growth(
+    financial_line_items: list,
+) -> dict[str, any]:
+    """
+    Factor 4: Conservative Growth Assumptions (10% weight)
+    Uses historical growth with haircuts (Buffett/Munger conservatism).
+    """
+    if not financial_line_items or len(financial_line_items) < 3:
+        return {"score": 5, "max_score": 10, "details": "Insufficient data, neutral score"}
+    
+    score = 5  # Start neutral
+    details = []
+    
+    # Calculate historical growth
+    revenues = [item.revenue for item in financial_line_items if hasattr(item, 'revenue') and item.revenue is not None]
+    earnings = [item.net_income for item in financial_line_items if hasattr(item, 'net_income') and item.net_income is not None]
+    
+    if len(revenues) >= 3:
+        oldest_rev = revenues[-1]
+        latest_rev = revenues[0]
+        if oldest_rev > 0:
+            years = len(revenues) - 1
+            historical_growth = ((latest_rev / oldest_rev) ** (1 / years)) - 1
+            # Apply 30% haircut for conservatism (Buffett/Munger)
+            conservative_growth = max(0, historical_growth * 0.7)
+            
+            if conservative_growth > 0.15:
+                score += 3
+                details.append(f"Conservative growth: {conservative_growth:.1%} (strong)")
+            elif conservative_growth > 0.08:
+                score += 2
+                details.append(f"Conservative growth: {conservative_growth:.1%} (moderate)")
+            elif conservative_growth > 0.03:
+                score += 1
+                details.append(f"Conservative growth: {conservative_growth:.1%} (slow)")
+            else:
+                score -= 1
+                details.append(f"Conservative growth: {conservative_growth:.1%} (stagnant)")
+    
+    if len(earnings) >= 3:
+        oldest_earn = earnings[-1]
+        latest_earn = earnings[0]
+        if oldest_earn > 0:
+            years = len(earnings) - 1
+            earnings_growth = ((latest_earn / oldest_earn) ** (1 / years)) - 1
+            conservative_earn_growth = max(0, earnings_growth * 0.7)
+            
+            if conservative_earn_growth > 0.15:
+                score += 2
+                details.append(f"Conservative earnings growth: {conservative_earn_growth:.1%}")
+            elif conservative_earn_growth < 0:
+                score -= 2
+                details.append(f"Negative earnings growth: {conservative_earn_growth:.1%}")
+    
+    return {"score": max(0, min(score, 10)), "max_score": 10, "details": "; ".join(details) if details else "Limited growth data"}
+
+
+def analyze_business_quality(
+    metrics: list,
+    financial_line_items: list,
+) -> dict[str, any]:
+    """
+    Factor 5: Business Quality (25% weight)
+    Combines Buffett (ROE, moat, pricing power) + Munger (quality, predictability).
+    """
+    if not metrics:
+        return {"score": 0, "max_score": 10, "details": "Insufficient data for quality analysis"}
+    
+    score = 0
+    details = []
+    latest_metrics = metrics[0]
+    
+    # ROE (Buffett/Munger: > 15% is quality)
+    if latest_metrics.return_on_equity is not None:
+        roe = latest_metrics.return_on_equity
+        if roe > 0.20:
+            score += 3
+            details.append(f"ROE: {roe:.1%} (excellent quality)")
+        elif roe > 0.15:
+            score += 2
+            details.append(f"ROE: {roe:.1%} (good quality)")
+        elif roe > 0.10:
+            score += 1
+            details.append(f"ROE: {roe:.1%} (moderate)")
+        else:
+            details.append(f"ROE: {roe:.1%} (weak)")
+    
+    # ROE Consistency (Munger: predictability)
+    if len(metrics) >= 5:
+        roes = [m.return_on_equity for m in metrics if m.return_on_equity is not None]
+        if len(roes) >= 5:
+            high_roe_periods = sum(1 for r in roes if r > 0.15)
+            consistency = high_roe_periods / len(roes)
+            if consistency >= 0.8:
+                score += 2
+                details.append(f"ROE Consistency: {consistency:.0%} periods >15% (Munger predictable)")
+            elif consistency >= 0.6:
+                score += 1
+                details.append(f"ROE Consistency: {consistency:.0%} periods >15%")
+    
+    # Operating Margin (Buffett: pricing power indicator)
+    if latest_metrics.operating_margin is not None:
+        op_margin = latest_metrics.operating_margin
+        if op_margin > 0.20:
+            score += 2
+            details.append(f"Operating Margin: {op_margin:.1%} (strong)")
+        elif op_margin > 0.15:
+            score += 1
+            details.append(f"Operating Margin: {op_margin:.1%} (good)")
+        else:
+            details.append(f"Operating Margin: {op_margin:.1%} (weak)")
+    
+    # Moat Indicators (Buffett: competitive advantage)
+    moat_analysis = analyze_moat(metrics)
+    moat_score = moat_analysis.get("score", 0)
+    moat_max = moat_analysis.get("max_score", 5)
+    if moat_max > 0:
+        moat_ratio = moat_score / moat_max
+        if moat_ratio > 0.8:
+            score += 3
+            details.append(f"Moat: {moat_ratio:.0%} (strong competitive advantage)")
+        elif moat_ratio > 0.6:
+            score += 2
+            details.append(f"Moat: {moat_ratio:.0%} (moderate advantage)")
+        elif moat_ratio > 0.4:
+            score += 1
+            details.append(f"Moat: {moat_ratio:.0%} (some advantage)")
+    
+    return {"score": min(score, 10), "max_score": 10, "details": "; ".join(details) if details else "Limited quality data"}
+
+
+def generate_buffett_output_rule_based(
+        ticker: str,
+        analysis_data: dict[str, any],
+) -> WarrenBuffettSignal:
+    """
+    Generate deterministic Value Composite signal based on composite factor scores.
+    
+    Composite factors (weighted):
+    - Valuation Margin of Safety (30%): Graham Number, net-net, intrinsic value discount
+    - Business Quality (25%): ROE, moat, pricing power, consistency
+    - Balance Sheet Strength (20%): Current ratio, debt-to-equity, cash/debt
+    - Earnings Quality (15%): Stability, FCF yield, consistency
+    - Conservative Growth (10%): Historical growth with haircuts
+    """
+    score = analysis_data.get("score", 0)
+    max_score = analysis_data.get("max_score", 1)
+    margin_of_safety = analysis_data.get("margin_of_safety")
+    
+    # Get composite factor scores for detailed reasoning
+    valuation_margin = analysis_data.get("valuation_margin", {})
+    balance_sheet = analysis_data.get("balance_sheet_strength", {})
+    earnings = analysis_data.get("earnings_quality", {})
+    growth = analysis_data.get("conservative_growth", {})
+    quality = analysis_data.get("business_quality", {})
+    
+    # Calculate score ratio
+    score_ratio = score / max_score if max_score > 0 else 0.0
+    
+    # Calculate confidence based on score ratio and factor consistency
+    base_confidence = int(50 + (score_ratio - 0.5) * 60)  # 20-80 base range
+    base_confidence = max(20, min(85, base_confidence))  # Clamp to 20-85
+    
+    # Adjust confidence based on factor consistency
+    factor_scores = [
+        valuation_margin.get("score", 0) / max(1, valuation_margin.get("max_score", 1)),
+        balance_sheet.get("score", 0) / max(1, balance_sheet.get("max_score", 1)),
+        earnings.get("score", 0) / max(1, earnings.get("max_score", 1)),
+        growth.get("score", 0) / max(1, growth.get("max_score", 1)),
+        quality.get("score", 0) / max(1, quality.get("max_score", 1)),
+    ]
+    
+    # If factors are consistent (all high or all low), increase confidence
+    factor_std = (sum((f - score_ratio)**2 for f in factor_scores) / len(factor_scores))**0.5
+    consistency_boost = max(0, 10 - int(factor_std * 20))  # Up to +10 points for consistency
+    final_confidence = min(90, base_confidence + consistency_boost)
+    
+    # Rule-based decision logic
+    if margin_of_safety is not None:
+        # Strong bullish: High composite score + significant margin of safety
+        if score_ratio > 0.7 and margin_of_safety > 0.2:
+            return WarrenBuffettSignal(
+                signal="bullish",
+                confidence=final_confidence,
+                reasoning=f"Value Composite: Strong (score {score_ratio:.0%}, margin {margin_of_safety:.0%}). Factors: Val {valuation_margin.get('score', 0):.1f}, Quality {quality.get('score', 0):.1f}, BS {balance_sheet.get('score', 0):.1f}, Earnings {earnings.get('score', 0):.1f}, Growth {growth.get('score', 0):.1f}"
+            )
+        # Moderate bullish: Good score + positive margin of safety
+        elif score_ratio > 0.6 and margin_of_safety > 0:
+            return WarrenBuffettSignal(
+                signal="bullish",
+                confidence=final_confidence,
+                reasoning=f"Value Composite: Good (score {score_ratio:.0%}, margin {margin_of_safety:.0%}). Factors: Val {valuation_margin.get('score', 0):.1f}, Quality {quality.get('score', 0):.1f}, BS {balance_sheet.get('score', 0):.1f}"
+            )
+        # Bearish: Poor score or negative margin of safety
+        elif score_ratio < 0.4 or margin_of_safety < -0.2:
+            return WarrenBuffettSignal(
+                signal="bearish",
+                confidence=final_confidence,
+                reasoning=f"Value Composite: Weak (score {score_ratio:.0%}, margin {margin_of_safety:.0%}). Poor valuation/quality/balance sheet"
+            )
+        # Neutral: Mixed signals
+        else:
+            return WarrenBuffettSignal(
+                signal="neutral",
+                confidence=final_confidence,
+                reasoning=f"Value Composite: Mixed (score {score_ratio:.0%}, margin {margin_of_safety:.0%}). Inconsistent factors"
+            )
+    else:
+        # No margin of safety data - use score only
+        if score_ratio > 0.7:
+            return WarrenBuffettSignal(
+                signal="bullish",
+                confidence=final_confidence,
+                reasoning=f"Value Composite: Strong fundamentals (score {score_ratio:.0%}), valuation unknown. Quality {quality.get('score', 0):.1f}, BS {balance_sheet.get('score', 0):.1f}"
+            )
+        elif score_ratio < 0.4:
+            return WarrenBuffettSignal(
+                signal="bearish",
+                confidence=final_confidence,
+                reasoning=f"Value Composite: Weak fundamentals (score {score_ratio:.0%}). Poor quality/balance sheet"
+            )
+        else:
+            return WarrenBuffettSignal(
+                signal="neutral",
+                confidence=final_confidence,
+                reasoning=f"Value Composite: Moderate (score {score_ratio:.0%}), insufficient valuation data"
+            )
+
+
 def generate_buffett_output(
         ticker: str,
         analysis_data: dict[str, any],
@@ -817,10 +1297,15 @@ def generate_buffett_output(
     def create_default_warren_buffett_signal():
         return WarrenBuffettSignal(signal="neutral", confidence=50, reasoning="Insufficient data")
 
+    # Rule-based factory for deterministic mode
+    def create_rule_based_warren_buffett_signal():
+        return generate_buffett_output_rule_based(ticker, analysis_data)
+
     return call_llm(
         prompt=prompt,
         pydantic_model=WarrenBuffettSignal,
         agent_name=agent_id,
         state=state,
         default_factory=create_default_warren_buffett_signal,
+        rule_based_factory=create_rule_based_warren_buffett_signal,
     )
