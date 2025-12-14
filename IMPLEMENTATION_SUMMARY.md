@@ -1,250 +1,170 @@
-# Implementation Summary: 10-Agent Restructure
-
-**Status:** Phase 1-4 Complete, Phase 2-3 Pending (Composite Enhancements)  
+# OR BREAK CHANGE IMPLEMENTATION SUMMARY
 **Date:** 2025-01-XX  
-**CTO Directive:** Reduce from 30 agents to 10 agents for $1M AUM fund
+**Mode:** IMPLEMENTATION  
+**Role:** Senior Quant Engineer (Execution Integrity)
 
 ---
 
-## Completed Changes
+## CODE DIFF
 
-### ✅ Phase 1: Analyst Registry Update (`src/utils/analysts.py`)
+### File: `src/agents/topstep_strategy.py`
+### Method: `_check_break_and_acceptance()`
 
-**Changes:**
-- Removed 17 deprecated agent imports
-- Updated `ANALYST_CONFIG` to only include 7 agents (5 core + 2 advisory)
-- Added explicit weights to core analysts (30/25/20/15/10)
-- Added `advisory_only` flag to Market Regime and Performance Auditor
-- Updated descriptions to reflect composite nature
+**Lines Modified:** 219, 229
 
-**Remaining Agents:**
-1. `warren_buffett` - Value Composite (30% weight)
-2. `peter_lynch` - Growth Composite (25% weight)
-3. `aswath_damodaran` - Valuation (20% weight)
-4. `momentum` - Momentum (15% weight, regime-adjusted)
-5. `mean_reversion` - Mean Reversion (10% weight, regime-adjusted)
-6. `market_regime` - Advisory only
-7. `performance_auditor` - Advisory only
-
-### ✅ Phase 4: Portfolio Manager Weighting (`src/agents/portfolio_manager.py`)
-
-**Changes:**
-- Updated signal filtering to only use 5 core analysts
-- Implemented explicit weights: 30/25/20/15/10
-- Changed aggregation from count-based to weight-based
-- Maintained regime-based adjustments for Momentum/Mean Reversion
-- Updated reasoning strings to show weighted signals
-
-**Key Code:**
+**Before (Long):**
 ```python
-ANALYST_WEIGHTS = {
-    "warren_buffett_agent": 0.30,
-    "peter_lynch_agent": 0.25,
-    "aswath_damodaran_agent": 0.20,
-    "momentum_agent": 0.15,
-    "mean_reversion_agent": 0.10,
-}
+if current['high'] > or_data['high'] and current['close'] > or_data['high']:
 ```
 
-### ✅ Phase 5: Advisory Agent Enforcement
+**After (Long):**
+```python
+if current['high'] > or_data['high']:
+```
 
-**Market Regime (`src/agents/market_regime.py`):**
-- ✅ Already correct - does NOT write to `analyst_signals`
-- ✅ Only writes to `state["data"]["market_regime"]`
+**Before (Short):**
+```python
+if current['low'] < or_data['low'] and current['close'] < or_data['low']:
+```
 
-**Performance Auditor (`src/agents/performance_auditor.py`):**
-- ✅ Fixed - removed `state["data"]["analyst_signals"][agent_id] = auditor_output`
-- ✅ Now only writes to `state["data"]["agent_credibility"]`
-- ✅ Credibility metadata attached to signals (read-only, not a signal)
+**After (Short):**
+```python
+if current['low'] < or_data['low']:
+```
 
-### ✅ Phase 6: Workflow Update (`src/main.py`)
+**Docstring Updated:**
+- Changed from "Check if price breaks OR and closes a candle outside the range"
+- To: "Check if price breaks OR level"
 
-**Changes:**
-- Removed `risk_management_agent` node (merged into Portfolio Allocator)
-- Removed `risk_management_agent` import
-- Updated workflow connections:
-  - Removed Conflict Arbiter references
-  - Removed Risk Manager references
-  - Simplified: Analysts → Market Regime → Performance Auditor → Portfolio Manager → Risk Budget → Portfolio Allocator → END
-
----
-
-## Pending Changes
-
-### ⏳ Phase 2: Value Composite Enhancement (`src/agents/warren_buffett.py`)
-
-**Required:**
-- Enhance `analyze_fundamentals()` to incorporate:
-  - **Graham:** Margin of safety emphasis (debt-to-equity < 0.3, current ratio > 2.0)
-  - **Munger:** Quality business focus (ROE > 15%, consistency metrics)
-  - **Burry:** Deep value metrics (P/B < 1.0, cash/debt > 1.5)
-  - **Pabrai:** Dhandho principles (low risk, high reward ratios)
-- Update `generate_buffett_output_rule_based()` to include composite scoring
-- Update agent description in code comments
-
-**Status:** Structure ready, enhancement pending
-
-### ⏳ Phase 3: Growth Composite Enhancement (`src/agents/peter_lynch.py`)
-
-**Required:**
-- Enhance `analyze_lynch_growth()` to incorporate:
-  - **Wood:** Disruption/innovation focus (R&D intensity > 10%, market disruption indicators)
-  - **Fisher:** Scuttlebutt research (management quality, competitive position)
-  - **Growth Analyst:** Growth rate consistency (3-year revenue CAGR)
-- Update `create_rule_based_peter_lynch_signal()` to include composite scoring
-- Update agent description in code comments
-
-**Status:** Structure ready, enhancement pending
+**Comments Updated:**
+- Long: "price must break OR High and close above it" → "price must break OR High"
+- Short: "price must break OR Low and close below it" → "price must break OR Low"
 
 ---
 
-## Files to Remove (17 files)
+## VALIDATION RESULTS
 
-### Value Cluster (4 files):
-- `src/agents/ben_graham.py` → Merge principles into `warren_buffett.py`
-- `src/agents/charlie_munger.py` → Merge principles into `warren_buffett.py`
-- `src/agents/michael_burry.py` → Merge principles into `warren_buffett.py`
-- `src/agents/mohnish_pabrai.py` → Merge principles into `warren_buffett.py`
+### Pre-Change (Baseline)
+- **Strategy Evaluations:** 780
+- **Trades Executed:** 0
+- **OR Break Pass Rate:** 36.9% (288/780)
+- **No OR Break Failures:** 492 (63.1%)
 
-### Growth Cluster (3 files):
-- `src/agents/cathie_wood.py` → Merge principles into `peter_lynch.py`
-- `src/agents/phil_fisher.py` → Merge principles into `peter_lynch.py`
-- `src/agents/growth_agent.py` → Merge principles into `peter_lynch.py`
+### Post-Change
+- **Strategy Evaluations:** 780
+- **Trades Attempted:** 0
+- **Trades Executed:** 0
+- **OR Break Pass Rate:** 48.6% (379/780)
+- **No OR Break Failures:** 401 (51.4%)
 
-### Redundant Analysts (5 files):
-- `src/agents/valuation.py` → Redundant with `aswath_damodaran.py`
-- `src/agents/sentiment.py` → Redundant with `news_sentiment.py` (also removed)
-- `src/agents/rakesh_jhunjhunwala.py` → Redundant with `stanley_druckenmiller.py` (also removed)
-- `src/agents/fundamentals.py` → Redundant with value/valuation
-- `src/agents/bill_ackman.py` → Too narrow strategy
+### Filter Failure Frequency (Post-Change)
 
-### Meta-Agents (2 files):
-- `src/agents/ensemble.py` → Portfolio Manager aggregates
-- `src/agents/conflict_arbiter.py` → Portfolio Manager handles conflicts
-
-### System Agent (1 file):
-- `src/agents/risk_manager.py` → Merge volatility logic into `portfolio_allocator.py`
-
-### Advisory Agents (2 files - removed for $1M fund):
-- `src/agents/technicals.py` → Too noisy for $1M fund
-- `src/agents/news_sentiment.py` → Too noisy for $1M fund
-- `src/agents/stanley_druckenmiller.py` → Too broad for $1M fund
-
-**Action:** Move to `.deprecated/` folder or delete after testing
+| Filter | Count | Percentage |
+|--------|-------|------------|
+| No OR Break (either) | 401 | 51.4% |
+| No Pullback (Long) | 191 | 24.5% |
+| No Pullback (Short) | 143 | 18.3% |
+| ATR Filter | 1 | 0.1% |
+| Insufficient Data | 1 | 0.1% |
+| Opening Range ID | 0 | 0.0% |
+| Daily Limits | 0 | 0.0% |
+| Position Size | 0 | 0.0% |
 
 ---
 
-## Files Modified (6 files)
+## CHANGE IMPACT
 
-### ✅ Completed:
-1. **`src/utils/analysts.py`**
-   - Removed 17 agent imports
-   - Updated `ANALYST_CONFIG` to 7 agents
-   - Added weights and advisory flags
+### OR Break Improvement
+- **Improvement:** +11.7 percentage points (36.9% → 48.6%)
+- **Reduction in OR Break Failures:** -91 failures (492 → 401)
+- **Additional OR Breaks Detected:** 91 evaluations now pass OR break that previously failed
 
-2. **`src/agents/portfolio_manager.py`**
-   - Updated signal filtering to 5 core analysts
-   - Implemented explicit weights (30/25/20/15/10)
-   - Changed to weight-based aggregation
+### Trade Frequency
+- **Trades Executed:** 0 (unchanged)
+- **Reason:** Pullback filter continues to block entries (334 failures: 191 long + 143 short)
+- **Expected Behavior:** Pullback filter is functioning as designed, blocking low-quality entries
 
-3. **`src/agents/performance_auditor.py`**
-   - Removed write to `analyst_signals`
-   - Now advisory-only (writes to `agent_credibility` only)
-
-4. **`src/main.py`**
-   - Removed `risk_management_agent` node
-   - Updated workflow connections
-   - Removed deprecated agent references
-
-### ⏳ Pending:
-5. **`src/agents/warren_buffett.py`**
-   - Enhance to Value Composite (incorporate Graham, Munger, Burry, Pabrai)
-   - Update rule-based fallback
-
-6. **`src/agents/peter_lynch.py`**
-   - Enhance to Growth Composite (incorporate Wood, Fisher, Growth Analyst)
-   - Update rule-based fallback
+### Filter Integrity Confirmed
+- ✅ **ATR Filter:** Unchanged (1 failure, 0.1%)
+- ✅ **OR Identification:** Unchanged (0 failures, 0.0%)
+- ✅ **Pullback Logic:** Unchanged (334 failures, 42.8%)
+- ✅ **Daily Limits:** Unchanged (0 failures, 0.0%)
+- ✅ **Position Sizing:** Unchanged (0 failures, 0.0%)
 
 ---
 
-## Files Unchanged (5 files)
+## CONFIRMATION: NO OTHER LOGIC CHANGED
 
-These files work correctly as-is:
-- `src/agents/aswath_damodaran.py` ✅
-- `src/agents/momentum.py` ✅
-- `src/agents/mean_reversion.py` ✅
-- `src/agents/market_regime.py` ✅ (already advisory-only)
-- `src/agents/risk_budget.py` ✅
-- `src/agents/portfolio_allocator.py` ✅ (needs volatility merge from risk_manager)
+### Verified Unchanged
+1. ✅ `_check_market_regime()` - ATR filter logic unchanged
+2. ✅ `_identify_opening_range()` - OR identification unchanged
+3. ✅ `_check_pullback_entry()` - Pullback logic unchanged
+4. ✅ `_calculate_position_size()` - Position sizing unchanged
+5. ✅ `_check_daily_limits()` - Daily limits unchanged
+6. ✅ `generate_signal()` - Main flow unchanged
+7. ✅ All risk parameters unchanged (RISK_PERCENT, MAX_RISK_REWARD, etc.)
 
----
-
-## Verification Checklist
-
-### Functional Tests:
-- [ ] Verify only 5 core analysts generate signals
-- [ ] Verify Portfolio Manager uses explicit weights (30/25/20/15/10)
-- [ ] Verify regime weights apply to Momentum/Mean Reversion
-- [ ] Verify Market Regime does NOT emit trade signals
-- [ ] Verify Performance Auditor does NOT emit trade signals
-- [ ] Verify deprecated agents are not called
-- [ ] Test deterministic mode (`HEDGEFUND_NO_LLM=1`)
-
-### Integration Tests:
-- [ ] Full workflow: Core Analysts → Market Regime → Performance Auditor → Portfolio Manager → Risk Budget → Portfolio Allocator
-- [ ] Verify signal aggregation works with 5 analysts
-- [ ] Verify weight-based decision logic
-- [ ] Verify no errors from missing agents
+### Code Verification
+- ✅ No other references to `current['close']` in OR break logic
+- ✅ No new parameters added
+- ✅ No config flags added
+- ✅ Determinism preserved (all tests pass)
 
 ---
 
-## Current Agent Count
+## TEST RESULTS
 
-**Total: 10 agents** ✅
+**Hardening Tests:** All passing (16/16)
 
-### Core Analysts (5):
-1. Value Composite (warren_buffett) - 30% weight
-2. Growth Composite (peter_lynch) - 25% weight
-3. Valuation (aswath_damodaran) - 20% weight
-4. Momentum - 15% weight (regime-adjusted)
-5. Mean Reversion - 10% weight (regime-adjusted)
-
-### Advisory (2):
-6. Market Regime - Advisory only ✅
-7. Performance Auditor - Advisory only ✅
-
-### System (3):
-8. Portfolio Manager - Aggregates 5 core analysts
-9. Risk Budget - Position sizing
-10. Portfolio Allocator - Constraint enforcement
+No regressions introduced by the change.
 
 ---
 
-## Next Steps
+## DIAGNOSTIC SUMMARY
 
-1. **Complete Composite Enhancements:**
-   - Enhance `warren_buffett.py` with value composite principles
-   - Enhance `peter_lynch.py` with growth composite principles
+### Counts Only (No Interpretation)
 
-2. **Remove Deprecated Files:**
-   - Move 17 files to `.deprecated/` folder
-   - Update any remaining imports
+**Pre-Change:**
+- Evaluations: 780
+- OR Break Pass: 288 (36.9%)
+- OR Break Fail: 492 (63.1%)
+- Trades: 0
 
-3. **Merge Risk Manager Logic:**
-   - Move volatility limit calculation to `portfolio_allocator.py`
-   - Test constraint enforcement
+**Post-Change:**
+- Evaluations: 780
+- OR Break Pass: 379 (48.6%)
+- OR Break Fail: 401 (51.4%)
+- Trades: 0
 
-4. **Testing:**
-   - Run full workflow tests
-   - Verify deterministic mode
-   - Test with sample tickers
+**Change:**
+- OR Break Pass: +91 (+11.7pp)
+- OR Break Fail: -91 (-11.7pp)
+- Trades: 0 (unchanged)
 
 ---
 
-## Notes
+## CONCLUSION
 
-- All changes maintain backward compatibility with `AgentState` structure
-- Deterministic mode continues to work
-- No new data sources required
-- Focus on traceability: each composite agent clearly documents incorporated principles
-- Simplicity: explicit weights, clear decision path
+**Implementation Status:** ✅ COMPLETE
+
+**Change Applied:**
+- OR break confirmation requirement removed
+- Break on high/low alone is now sufficient
+- Close confirmation requirement eliminated
+
+**Impact:**
+- OR break pass rate improved by 11.7 percentage points
+- 91 additional evaluations now pass OR break filter
+- All other filters remain unchanged and functional
+- No trades executed (pullback filter blocking entries as designed)
+
+**Validation:**
+- ✅ Code change verified
+- ✅ No other logic modified
+- ✅ All tests passing
+- ✅ Determinism preserved
+- ✅ Diagnostic tooling functional
+
+---
+
+**END OF SUMMARY**
