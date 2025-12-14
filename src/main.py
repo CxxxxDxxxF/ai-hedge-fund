@@ -1,3 +1,4 @@
+import os
 import sys
 
 from dotenv import load_dotenv
@@ -16,6 +17,7 @@ from src.utils.visualize import save_graph_as_png
 from src.cli.input import (
     parse_cli_inputs,
 )
+from src.communication.contracts import validate_state_data
 
 import argparse
 from datetime import datetime
@@ -33,14 +35,24 @@ def parse_hedge_fund_response(response):
     try:
         return json.loads(response)
     except json.JSONDecodeError as e:
-        print(f"JSON decoding error: {e}\nResponse: {repr(response)}")
-        return None
+        # HARDENING: Must raise, not return None (causes downstream crashes)
+        response_preview = repr(response)[:1000] if response else "None"
+        raise RuntimeError(
+            f"ENGINE FAILURE: Invalid JSON response from hedge fund system: {e}\n"
+            f"Response preview (first 1000 chars): {response_preview}"
+        ) from e
     except TypeError as e:
-        print(f"Invalid response type (expected string, got {type(response).__name__}): {e}")
-        return None
+        # HARDENING: Must raise, not return None (causes downstream crashes)
+        raise RuntimeError(
+            f"ENGINE FAILURE: Invalid response type (expected string, got {type(response).__name__}): {e}"
+        ) from e
     except Exception as e:
-        print(f"Unexpected error while parsing response: {e}\nResponse: {repr(response)}")
-        return None
+        # HARDENING: Must raise, not return None (causes downstream crashes)
+        response_preview = repr(response)[:1000] if response else "None"
+        raise RuntimeError(
+            f"ENGINE FAILURE: Unexpected error while parsing response: {e}\n"
+            f"Response preview (first 1000 chars): {response_preview}"
+        ) from e
 
 
 ##### Run the Hedge Fund #####
@@ -55,34 +67,62 @@ def run_hedge_fund(
     model_provider: str = "OpenAI",
 ):
     # Start progress tracking
-    progress.start()
+    # Start progress only if not in deterministic mode (non-blocking)
+    if os.getenv("HEDGEFUND_NO_LLM") != "1":
+        progress.start()
 
     try:
         # Build workflow (default to all analysts when none provided)
         workflow = create_workflow(selected_analysts if selected_analysts else None)
         agent = workflow.compile()
 
-        final_state = agent.invoke(
-            {
-                "messages": [
-                    HumanMessage(
-                        content="Make trading decisions based on the provided data.",
-                    )
-                ],
-                "data": {
-                    "tickers": tickers,
-                    "portfolio": portfolio,
-                    "start_date": start_date,
-                    "end_date": end_date,
-                    "analyst_signals": {},
-                },
-                "metadata": {
-                    "show_reasoning": show_reasoning,
-                    "model_name": model_name,
-                    "model_provider": model_provider,
-                },
+        # HARDENING: Validate initial state before workflow invocation
+        initial_state = {
+            "messages": [
+                HumanMessage(
+                    content="Make trading decisions based on the provided data.",
+                )
+            ],
+            "data": {
+                "tickers": tickers,
+                "portfolio": portfolio,
+                "start_date": start_date,
+                "end_date": end_date,
+                "analyst_signals": {},
             },
-        )
+            "metadata": {
+                "show_reasoning": show_reasoning,
+                "model_name": model_name,
+                "model_provider": model_provider,
+            },
+        }
+        
+        # Validate initial state structure
+        try:
+            validate_state_data(initial_state)
+        except ValueError as e:
+            raise RuntimeError(
+                f"ENGINE FAILURE: Invalid initial state before workflow invocation: {e}"
+            ) from e
+        
+        # Additional validation: messages must be non-empty sequence
+        if not initial_state.get("messages") or len(initial_state["messages"]) == 0:
+            raise RuntimeError(
+                "ENGINE FAILURE: Initial state must have at least one message"
+            )
+        
+        # Additional validation: data must contain required fields
+        data = initial_state.get("data", {})
+        if not isinstance(data.get("tickers"), list) or len(data.get("tickers", [])) == 0:
+            raise RuntimeError(
+                "ENGINE FAILURE: Initial state must have non-empty tickers list"
+            )
+        if not isinstance(data.get("analyst_signals"), dict):
+            raise RuntimeError(
+                f"ENGINE FAILURE: analyst_signals must be dict, got {type(data.get('analyst_signals'))}"
+            )
+
+        final_state = agent.invoke(initial_state)
 
         return {
             "decisions": parse_hedge_fund_response(final_state["messages"][-1].content),
@@ -94,7 +134,9 @@ def run_hedge_fund(
         }
     finally:
         # Stop progress tracking
-        progress.stop()
+        # Stop progress if it was started
+        if progress.started:
+            progress.stop()
 
 
 def start(state: AgentState):
@@ -115,11 +157,12 @@ def create_workflow(selected_analysts=None):
         selected_analysts = list(analyst_nodes.keys())
     
     # Separate regular analysts from system analysts that need special ordering
-    # 10-agent restructure: Only Market Regime and Performance Auditor are system analysts
-    system_analysts = {"performance_auditor", "market_regime"}
+    # Advisory agents: Market Regime, Performance Auditor, Intelligence
+    system_analysts = {"performance_auditor", "market_regime", "intelligence"}
     regular_analysts = [a for a in selected_analysts if a not in system_analysts]
     has_performance_auditor = "performance_auditor" in selected_analysts
     has_market_regime = "market_regime" in selected_analysts
+    has_intelligence = "intelligence" in selected_analysts
     
     # Add all selected analyst nodes
     for analyst_key in selected_analysts:
@@ -163,6 +206,13 @@ def create_workflow(selected_analysts=None):
         if has_market_regime:
             workflow.add_edge(market_regime_node, perf_auditor_node)
         
+        # Intelligence Agent → Performance Auditor (if both exist)
+        if has_intelligence:
+            intelligence_node = analyst_nodes["intelligence"][0]
+            # Intelligence can run in parallel with other analysts
+            workflow.add_edge("start_node", intelligence_node)
+            workflow.add_edge(intelligence_node, perf_auditor_node)
+        
         # Performance Auditor → Portfolio Manager (10-agent restructure: removed Conflict Arbiter and Risk Manager)
         workflow.add_edge(perf_auditor_node, "portfolio_manager")
     else:
@@ -173,6 +223,12 @@ def create_workflow(selected_analysts=None):
         # Market Regime → Portfolio Manager (if no Performance Auditor)
         if has_market_regime:
             workflow.add_edge(market_regime_node, "portfolio_manager")
+        
+        # Intelligence Agent → Portfolio Manager (if no Performance Auditor)
+        if has_intelligence:
+            intelligence_node = analyst_nodes["intelligence"][0]
+            workflow.add_edge("start_node", intelligence_node)
+            workflow.add_edge(intelligence_node, "portfolio_manager")
     
     # Connect Portfolio Manager → Risk Budget → Portfolio Allocator → END
     workflow.add_edge("portfolio_manager", "risk_budget_agent")

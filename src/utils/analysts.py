@@ -14,6 +14,13 @@ from src.agents.momentum import momentum_agent
 from src.agents.mean_reversion import mean_reversion_agent
 from src.agents.performance_auditor import performance_auditor_agent
 from src.agents.market_regime import market_regime_agent
+from src.agents.intelligence_agent import intelligence_agent
+# New strategy agents
+from src.agents.cross_sectional_momentum import cross_sectional_momentum_agent
+from src.agents.mean_reversion_volatility_gated import mean_reversion_volatility_gated_agent
+from src.agents.market_neutral_ls import market_neutral_ls_agent
+from src.agents.regime_trend_following import regime_trend_following_agent
+from src.agents.capital_preservation import capital_preservation_agent
 
 # Define analyst configuration - single source of truth
 # 10-Agent Structure: 5 Core Analysts + 2 Advisory + 3 System
@@ -82,6 +89,66 @@ ANALYST_CONFIG = {
         "type": "analyst",
         "order": 7,
         "advisory_only": True,  # Does NOT write to analyst_signals
+    },
+    "intelligence": {
+        "display_name": "Intelligence Agent",
+        "description": "Market Intelligence & Pattern Recognition (Advisory Only)",
+        "investing_style": "Provides market intelligence including pattern detection (breakouts, reversals, momentum shifts), anomaly detection (price spikes, volume surges), market structure analysis (support/resistance), and strategic insights. Does NOT emit trade signals.",
+        "agent_func": intelligence_agent,
+        "type": "analyst",
+        "order": 8,
+        "advisory_only": True,  # Does NOT write to analyst_signals
+    },
+    # NEW STRATEGY AGENTS (Experimental) - Can be selected for testing
+    "cross_sectional_momentum": {
+        "display_name": "Cross-Sectional Momentum",
+        "description": "Relative Performance Ranking Specialist",
+        "investing_style": "Ranks all tickers by 20-day return and generates signals based on relative performance. Longs top performers, shorts bottom performers. Different from time-series momentum (ranks relative to other stocks).",
+        "agent_func": cross_sectional_momentum_agent,
+        "type": "analyst",
+        "order": 9,
+        "weight": 0.05,  # Low weight initially (experimental)
+        "experimental": True,
+    },
+    "mean_reversion_volatility_gated": {
+        "display_name": "Mean Reversion (Volatility Gated)",
+        "description": "Volatility-Filtered Mean Reversion Specialist",
+        "investing_style": "Enhanced mean reversion that only trades when volatility is low (≤30% annualized). High volatility = neutral (mean reversion less reliable). Low volatility = normal mean reversion signals.",
+        "agent_func": mean_reversion_volatility_gated_agent,
+        "type": "analyst",
+        "order": 10,
+        "weight": 0.05,  # Low weight initially (experimental)
+        "experimental": True,
+    },
+    "market_neutral_ls": {
+        "display_name": "Market-Neutral Long/Short",
+        "description": "Dollar-Neutral Pairs Trading Specialist",
+        "investing_style": "Generates market-neutral pairs by ranking tickers by composite strength (momentum + trend + volatility). Longs top half, shorts bottom half. Maintains dollar-neutral exposure.",
+        "agent_func": market_neutral_ls_agent,
+        "type": "analyst",
+        "order": 11,
+        "weight": 0.05,  # Low weight initially (experimental)
+        "experimental": True,
+    },
+    "regime_trend_following": {
+        "display_name": "Regime-Conditional Trend Following",
+        "description": "Regime-Adjusted Trend Following Specialist",
+        "investing_style": "Trend following adjusted by market regime. Trending regime = strong signals. Mean-reverting regime = weak/no signals. Volatile regime = reduced confidence. Calm regime = normal trend following.",
+        "agent_func": regime_trend_following_agent,
+        "type": "analyst",
+        "order": 11,
+        "weight": 0.05,  # Low weight initially (experimental)
+        "experimental": True,
+    },
+    "capital_preservation": {
+        "display_name": "Capital Preservation",
+        "description": "Drawdown Minimization Specialist",
+        "investing_style": "Focuses on protecting capital and minimizing drawdowns. Reduces position sizes when drawdowns occur. Exits positions when drawdown exceeds threshold. Prefers defensive positions during high volatility.",
+        "agent_func": capital_preservation_agent,
+        "type": "analyst",
+        "order": 12,
+        "weight": 0.05,  # Low weight initially (experimental)
+        "experimental": True,
     },
 }
 

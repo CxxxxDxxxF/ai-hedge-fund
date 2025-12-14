@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from typing_extensions import Literal
 from src.utils.progress import progress
 from src.utils.llm import call_llm
+from src.communication.contracts import validate_agent_signal
 
 
 class PortfolioDecision(BaseModel):
@@ -73,10 +74,19 @@ def portfolio_management_agent(state: AgentState, agent_id: str = "portfolio_man
                 and not agent.startswith("risk_budget_agent")
                 and not agent.startswith("portfolio_allocator_agent")
                 and ticker in signals):
-                sig = signals[ticker].get("signal")
-                conf = signals[ticker].get("confidence")
-                if sig is not None and conf is not None:
-                    ticker_signals[agent] = {"sig": sig, "conf": conf}
+                signal_data = signals[ticker]
+                # HARDENING: Validate signal before aggregation
+                try:
+                    validated_signal = validate_agent_signal(signal_data)
+                    ticker_signals[agent] = {
+                        "sig": validated_signal.signal,
+                        "conf": validated_signal.confidence
+                    }
+                except ValueError as e:
+                    raise RuntimeError(
+                        f"ENGINE FAILURE: Invalid signal from {agent} for {ticker}: {e}\n"
+                        f"Signal data: {signal_data}"
+                    ) from e
         signals_by_ticker[ticker] = ticker_signals
 
     state["data"]["current_prices"] = current_prices
@@ -253,8 +263,20 @@ def generate_trading_decision_rule_based(
             
             # Get base weight for this agent
             base_weight = ANALYST_WEIGHTS.get(agent, 0.0)
+            
+            # Include experimental agents if they have weights defined in ANALYST_CONFIG
             if base_weight == 0.0:
-                continue  # Skip agents not in core 5
+                # Check if this is an experimental agent with a weight in config
+                from src.utils.analysts import ANALYST_CONFIG
+                agent_key = agent.replace("_agent", "")
+                if agent_key in ANALYST_CONFIG:
+                    config_weight = ANALYST_CONFIG[agent_key].get("weight", 0.0)
+                    if config_weight > 0.0:
+                        base_weight = config_weight
+                    else:
+                        continue  # Skip agents without weights
+                else:
+                    continue  # Skip agents not in core 5 or config
             
             # Apply regime weights to Momentum and Mean Reversion
             final_weight = base_weight
@@ -285,6 +307,9 @@ def generate_trading_decision_rule_based(
         else:
             avg_confidence = 50
         
+        # Calculate signal count (total agents providing signals)
+        signal_count = bullish_count + bearish_count + neutral_count
+        
         # Build regime info string
         regime_info = ""
         if regime_weights:
@@ -294,16 +319,43 @@ def generate_trading_decision_rule_based(
         # Decision based on weighted signal strength, not just counts
         net_weighted_signal = bullish_weighted_sum - bearish_weighted_sum
         
-        if net_weighted_signal > 0.1 and bullish_count > 0:  # Weighted bullish
+        # Calculate signal strength metrics
+        signal_count = bullish_count + bearish_count + neutral_count
+        signal_strength = abs(net_weighted_signal) / max(1.0, total_weight)  # Normalized strength 0-1
+        
+        # MINIMUM SIGNAL THRESHOLDS to prevent weak trades that get eaten by costs
+        # Require stronger signals and multiple agents agreeing
+        MIN_SIGNAL_STRENGTH = 0.25  # At least 25% of total weight must be directional
+        MIN_AGENT_CONSENSUS = 2  # At least 2 agents must agree (prevents single-agent dominance)
+        MIN_CONFIDENCE = 60  # Minimum average confidence to trade
+        
+        # Check if we have strong enough signal to overcome transaction costs
+        has_strong_signal = (
+            signal_strength >= MIN_SIGNAL_STRENGTH and
+            signal_count >= MIN_AGENT_CONSENSUS and
+            avg_confidence >= MIN_CONFIDENCE
+        )
+        
+        if net_weighted_signal > 0.1 and bullish_count > 0 and has_strong_signal:  # Strong weighted bullish
             # More bullish signals - try to buy
             if "buy" in allowed and allowed["buy"] > 0:
-                qty = min(allowed["buy"], max_shares.get(ticker, 0))
-                decisions[ticker] = PortfolioDecision(
-                    action="buy",
-                    quantity=qty,
-                    confidence=int(avg_confidence),
-                    reasoning=f"Bullish weighted signal (net: {net_weighted_signal:.2f}, {bullish_count}B/{bearish_count}S){regime_info}"
-                )
+                # Scale position size based on signal strength (stronger signal = larger position)
+                position_multiplier = min(1.0, signal_strength / 0.4)  # Full size at 40%+ strength
+                qty = int(min(allowed["buy"], max_shares.get(ticker, 0)) * position_multiplier)
+                if qty > 0:  # Only trade if we have meaningful size
+                    decisions[ticker] = PortfolioDecision(
+                        action="buy",
+                        quantity=qty,
+                        confidence=int(avg_confidence),
+                        reasoning=f"Strong bullish consensus (net: {net_weighted_signal:.2f}, strength: {signal_strength:.0%}, {bullish_count}B/{bearish_count}S, conf: {avg_confidence:.0f}%){regime_info}"
+                    )
+                else:
+                    decisions[ticker] = PortfolioDecision(
+                        action="hold",
+                        quantity=0,
+                        confidence=int(avg_confidence),
+                        reasoning=f"Bullish but position size too small after scaling{regime_info}"
+                    )
             else:
                 decisions[ticker] = PortfolioDecision(
                     action="hold",
@@ -311,24 +363,43 @@ def generate_trading_decision_rule_based(
                     confidence=int(avg_confidence),
                     reasoning=f"Bullish but no buy capacity{regime_info}"
                 )
-        elif net_weighted_signal < -0.1 and bearish_count > 0:  # Weighted bearish
+        elif net_weighted_signal < -0.1 and bearish_count > 0 and has_strong_signal:  # Strong weighted bearish
             # More bearish signals - try to sell or short
             if "sell" in allowed and allowed["sell"] > 0:
-                qty = allowed["sell"]
-                decisions[ticker] = PortfolioDecision(
-                    action="sell",
-                    quantity=qty,
-                    confidence=int(avg_confidence),
-                    reasoning=f"Bearish consensus ({bearish_count} bearish, {bullish_count} bullish){regime_info}"
-                )
+                # Scale position size based on signal strength
+                position_multiplier = min(1.0, signal_strength / 0.4)
+                qty = int(allowed["sell"] * position_multiplier)
+                if qty > 0:
+                    decisions[ticker] = PortfolioDecision(
+                        action="sell",
+                        quantity=qty,
+                        confidence=int(avg_confidence),
+                        reasoning=f"Strong bearish consensus (net: {net_weighted_signal:.2f}, strength: {signal_strength:.0%}, {bearish_count}S/{bullish_count}B, conf: {avg_confidence:.0f}%){regime_info}"
+                    )
+                else:
+                    decisions[ticker] = PortfolioDecision(
+                        action="hold",
+                        quantity=0,
+                        confidence=int(avg_confidence),
+                        reasoning=f"Bearish but position size too small after scaling{regime_info}"
+                    )
             elif "short" in allowed and allowed["short"] > 0:
-                qty = min(allowed["short"], max_shares.get(ticker, 0))
-                decisions[ticker] = PortfolioDecision(
-                    action="short",
-                    quantity=qty,
-                    confidence=int(avg_confidence),
-                    reasoning=f"Bearish consensus ({bearish_count} bearish, {bullish_count} bullish){regime_info}"
-                )
+                position_multiplier = min(1.0, signal_strength / 0.4)
+                qty = int(min(allowed["short"], max_shares.get(ticker, 0)) * position_multiplier)
+                if qty > 0:
+                    decisions[ticker] = PortfolioDecision(
+                        action="short",
+                        quantity=qty,
+                        confidence=int(avg_confidence),
+                        reasoning=f"Strong bearish consensus (net: {net_weighted_signal:.2f}, strength: {signal_strength:.0%}, {bearish_count}S/{bullish_count}B, conf: {avg_confidence:.0f}%){regime_info}"
+                    )
+                else:
+                    decisions[ticker] = PortfolioDecision(
+                        action="hold",
+                        quantity=0,
+                        confidence=int(avg_confidence),
+                        reasoning=f"Bearish but position size too small after scaling{regime_info}"
+                    )
             else:
                 decisions[ticker] = PortfolioDecision(
                     action="hold",
@@ -337,12 +408,25 @@ def generate_trading_decision_rule_based(
                     reasoning=f"Bearish weighted signal but no sell/short capacity (net: {net_weighted_signal:.2f}){regime_info}"
                 )
         else:
-            # Neutral or mixed signals - hold
+            # Weak signal, insufficient consensus, or low confidence - hold to avoid costs
+            reason_parts = []
+            if signal_strength < MIN_SIGNAL_STRENGTH:
+                reason_parts.append(f"signal strength {signal_strength:.0%} < {MIN_SIGNAL_STRENGTH:.0%}")
+            if signal_count < MIN_AGENT_CONSENSUS:
+                reason_parts.append(f"only {signal_count} agent(s) < {MIN_AGENT_CONSENSUS}")
+            if avg_confidence < MIN_CONFIDENCE:
+                reason_parts.append(f"confidence {avg_confidence:.0f}% < {MIN_CONFIDENCE}%")
+            
+            reason = f"Hold: Weak signal (net: {net_weighted_signal:.2f}, {bullish_count}B/{bearish_count}S/{neutral_count}N)"
+            if reason_parts:
+                reason += f". Thresholds not met: {', '.join(reason_parts)}"
+            reason += regime_info
+            
             decisions[ticker] = PortfolioDecision(
                 action="hold",
                 quantity=0,
                 confidence=int(avg_confidence) if signal_count > 0 else 50,
-                reasoning=f"Mixed/neutral signals (net: {net_weighted_signal:.2f}, {bullish_count}B/{bearish_count}S/{neutral_count}N){regime_info}"
+                reasoning=reason
             )
     
     return PortfolioManagerOutput(decisions=decisions)

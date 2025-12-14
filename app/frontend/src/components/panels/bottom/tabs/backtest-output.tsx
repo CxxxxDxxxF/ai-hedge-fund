@@ -3,6 +3,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { cn } from '@/lib/utils';
 import { MoreHorizontal } from 'lucide-react';
 import { getActionColor } from './output-tab-utils';
+import { StrategyMetricsPanel } from '@/components/dashboard/strategy-metrics-panel';
 
 // Component for displaying backtest progress
 function BacktestProgress({ agentData }: { agentData: Record<string, any> }) {
@@ -402,15 +403,25 @@ export function BacktestOutput({
   agentData: Record<string, any>; 
   outputData: any; 
 }) {
+  // Detect strategy type from tickers or agent data
+  const strategyType = agentData?.['backtest']?.tickers?.some((t: string) => 
+    ['ES', 'NQ', 'MES', 'MNQ'].includes(t.toUpperCase())
+  ) ? 'topstep' : 'portfolio_manager';
+
   return (
     <>
       <BacktestProgress agentData={agentData} />
       {outputData && <BacktestResults outputData={outputData} />}
+      {outputData?.performance_metrics && (
+        <StrategyMetricsPanel 
+          performanceMetrics={outputData.performance_metrics}
+          strategyType={strategyType}
+        />
+      )}
       {agentData && agentData['backtest'] && (
         <BacktestPerformanceMetrics agentData={agentData} />
       )}
       <BacktestTradingTable agentData={agentData} />
-
     </>
   );
 } 

@@ -1,8 +1,9 @@
 import { Flow } from '@/types/flow';
+import { TabService } from '@/services/tab-service';
 import { createContext, ReactNode, useCallback, useContext, useEffect, useState } from 'react';
 
 // Define tab types
-export type TabType = 'flow' | 'settings';
+export type TabType = 'flow' | 'settings' | 'dashboard';
 
 export interface Tab {
   id: string;
@@ -69,6 +70,9 @@ export function TabsProvider({ children }: TabsProviderProps) {
     if (type === 'settings') {
       return 'settings';
     }
+    if (type === 'dashboard') {
+      return 'dashboard';
+    }
     return `${type}-${Date.now()}`;
   }, []);
 
@@ -125,7 +129,12 @@ export function TabsProvider({ children }: TabsProviderProps) {
         }));
         
         setTabs(restoredTabs);
-        setActiveTabId(savedActiveTabId);
+        setActiveTabId(savedActiveTabId || restoredTabs[0]?.id || null);
+      } else {
+        // No saved tabs, start with Dashboard as default
+        const dashboardTab = TabService.createDashboardTab();
+        setTabs([dashboardTab]);
+        setActiveTabId(dashboardTab.id);
       }
       
       setIsInitialized(true);

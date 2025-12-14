@@ -113,13 +113,36 @@ class BacktestDayResult(BaseModel):
 
 
 class BacktestPerformanceMetrics(BaseModel):
+    # Core metrics
     sharpe_ratio: Optional[float] = None
     sortino_ratio: Optional[float] = None
     max_drawdown: Optional[float] = None
     max_drawdown_date: Optional[str] = None
+    total_return: Optional[float] = None
     long_short_ratio: Optional[float] = None
     gross_exposure: Optional[float] = None
     net_exposure: Optional[float] = None
+    
+    # Trade statistics
+    total_trades: Optional[int] = None
+    win_rate: Optional[float] = None
+    profit_factor: Optional[float] = None
+    expectancy: Optional[float] = None
+    average_win: Optional[float] = None
+    average_loss: Optional[float] = None
+    
+    # Funded-account metrics
+    time_to_recovery: Optional[int] = None  # Days to recover from max drawdown
+    losing_streaks: Optional[List[int]] = None  # List of losing streak lengths
+    profitable_days_pct: Optional[float] = None
+    largest_winning_day: Optional[float] = None
+    largest_losing_day: Optional[float] = None
+    
+    # Topstep strategy metrics (optional, only for ES/NQ/MES/MNQ)
+    opening_range_breaks: Optional[int] = None
+    pullback_entries: Optional[int] = None
+    regime_filter_passes: Optional[int] = None
+    daily_trade_limit_hits: Optional[int] = None
 
 
 class BacktestResponse(BaseModel):

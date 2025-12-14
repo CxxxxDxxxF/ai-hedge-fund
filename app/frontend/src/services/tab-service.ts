@@ -1,10 +1,11 @@
 import { Settings } from '@/components/settings/settings';
+import { Dashboard } from '@/components/dashboard/dashboard';
 import { FlowTabContent } from '@/components/tabs/flow-tab-content';
 import { Flow } from '@/types/flow';
 import { ReactNode, createElement } from 'react';
 
 export interface TabData {
-  type: 'flow' | 'settings';
+  type: 'flow' | 'settings' | 'dashboard';
   title: string;
   flow?: Flow;
   metadata?: Record<string, any>;
@@ -21,6 +22,9 @@ export class TabService {
       
       case 'settings':
         return createElement(Settings);
+      
+      case 'dashboard':
+        return createElement(Dashboard);
       
       default:
         throw new Error(`Unsupported tab type: ${tabData.type}`);
@@ -44,6 +48,14 @@ export class TabService {
     };
   }
 
+  static createDashboardTab(): TabData & { content: ReactNode } {
+    return {
+      type: 'dashboard',
+      title: 'Dashboard',
+      content: TabService.createTabContent({ type: 'dashboard', title: 'Dashboard' }),
+    };
+  }
+
   // Restore tab content for persisted tabs (used when loading from localStorage)
   static restoreTabContent(tabData: TabData): ReactNode {
     return TabService.createTabContent(tabData);
@@ -60,6 +72,9 @@ export class TabService {
       
       case 'settings':
         return TabService.createSettingsTab();
+      
+      case 'dashboard':
+        return TabService.createDashboardTab();
       
       default:
         throw new Error(`Cannot restore unsupported tab type: ${savedTab.type}`);

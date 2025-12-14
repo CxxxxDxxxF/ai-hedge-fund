@@ -5,6 +5,8 @@ from src.tools.api import (
     get_insider_trades,
     get_company_news,
     get_financial_metrics,
+    get_prices,
+    prices_to_df,
 )
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage
@@ -14,6 +16,7 @@ from typing_extensions import Literal
 from src.utils.progress import progress
 from src.utils.llm import call_llm
 from src.utils.api_key import get_api_key_from_state
+from src.utils.deterministic_guard import is_deterministic_mode, require_deterministic_data
 
 
 class PeterLynchSignal(BaseModel):
@@ -44,6 +47,69 @@ def peter_lynch_agent(state: AgentState, agent_id: str = "peter_lynch_agent"):
     lynch_analysis = {}
 
     for ticker in tickers:
+        # Check if deterministic mode - use price-based fallback
+        # Note: API-level guard in _make_api_request also blocks external calls,
+        # but we can still use price data for technical growth signals
+        if is_deterministic_mode():
+            # Use price-based growth proxy when external data unavailable
+            progress.update_status(agent_id, ticker, "Using price-based growth proxy (deterministic mode)")
+            
+            # Get price data for growth momentum analysis
+            prices = get_prices(
+                ticker=ticker,
+                start_date=data.get("start_date", end_date),
+                end_date=end_date,
+                api_key=api_key,
+            )
+            
+            if prices:
+                prices_df = prices_to_df(prices)
+                if len(prices_df) >= 60:  # Need enough data for growth trend
+                    # Calculate price-based growth proxy
+                    # Use 60-day momentum as proxy for business growth
+                    current_price = float(prices_df["close"].iloc[-1])
+                    price_60_days_ago = float(prices_df["close"].iloc[-60])
+                    price_growth = (current_price - price_60_days_ago) / price_60_days_ago if price_60_days_ago > 0 else 0.0
+                    
+                    # Calculate volatility-adjusted growth (lower vol = higher confidence)
+                    returns = prices_df["close"].pct_change().dropna()
+                    volatility = returns.std() * (252 ** 0.5)  # Annualized
+                    
+                    # Map price growth to signal
+                    if price_growth > 0.15 and volatility < 0.40:  # Strong growth, low volatility
+                        signal = "bullish"
+                        confidence = min(75, 50 + int(price_growth * 200))
+                        reasoning = f"Price-based growth proxy: {price_growth:.1%} over 60 days, low volatility ({volatility:.0%})"
+                    elif price_growth > 0.05 and volatility < 0.50:
+                        signal = "bullish"
+                        confidence = min(65, 50 + int(price_growth * 150))
+                        reasoning = f"Price-based growth proxy: {price_growth:.1%} over 60 days, moderate volatility"
+                    elif price_growth < -0.15 or volatility > 0.60:  # Poor growth or high volatility
+                        signal = "bearish"
+                        confidence = min(70, 50 + int(abs(price_growth) * 150))
+                        reasoning = f"Price-based growth proxy: {price_growth:.1%} over 60 days, high volatility ({volatility:.0%})"
+                    else:
+                        signal = "neutral"
+                        confidence = 50
+                        reasoning = f"Price-based growth proxy: {price_growth:.1%} over 60 days, mixed signals"
+                    
+                    lynch_analysis[ticker] = {
+                        "signal": signal,
+                        "confidence": float(confidence),
+                        "reasoning": reasoning,
+                    }
+                    progress.update_status(agent_id, ticker, f"Done (price-based: {signal})")
+                    continue
+            
+            # If no price data or insufficient data, return neutral
+            lynch_analysis[ticker] = {
+                "signal": "neutral",
+                "confidence": 50.0,
+                "reasoning": "Insufficient price data for growth proxy in deterministic mode",
+            }
+            progress.update_status(agent_id, ticker, "Done (deterministic mode - insufficient data)")
+            continue
+        
         progress.update_status(agent_id, ticker, "Gathering financial line items")
         # Relevant line items for Peter Lynch's approach
         financial_line_items = search_line_items(
@@ -74,11 +140,20 @@ def peter_lynch_agent(state: AgentState, agent_id: str = "peter_lynch_agent"):
         progress.update_status(agent_id, ticker, "Fetching financial metrics")
         metrics = get_financial_metrics(ticker, end_date, period="annual", limit=5, api_key=api_key)
 
-        progress.update_status(agent_id, ticker, "Fetching insider trades")
-        insider_trades = get_insider_trades(ticker, end_date, limit=50, api_key=api_key)
+        # Skip insider trades and news in deterministic mode (already handled above, but defensive)
+        allowed, fallback = require_deterministic_data(agent_id, "insider_trades", [])
+        if allowed:
+            progress.update_status(agent_id, ticker, "Fetching insider trades")
+            insider_trades = get_insider_trades(ticker, end_date, limit=50, api_key=api_key)
+        else:
+            insider_trades = fallback
 
-        progress.update_status(agent_id, ticker, "Fetching company news")
-        company_news = get_company_news(ticker, end_date, limit=50, api_key=api_key)
+        allowed, fallback = require_deterministic_data(agent_id, "company_news", [])
+        if allowed:
+            progress.update_status(agent_id, ticker, "Fetching company news")
+            company_news = get_company_news(ticker, end_date, limit=50, api_key=api_key)
+        else:
+            company_news = fallback
 
         # GROWTH COMPOSITE FACTOR ANALYSIS
         progress.update_status(agent_id, ticker, "Analyzing growth composite factors")
