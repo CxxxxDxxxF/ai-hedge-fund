@@ -56,6 +56,10 @@ class BacktestService:
         self.model_provider = model_provider
         self.request = request
         self.portfolio_values = []
+        # Trade tracking for metrics calculation
+        self.trades = []  # List of all executed trades
+        self.daily_pnl = []  # List of daily PnL records
+        self.previous_portfolio_value = initial_capital
 
     def execute_trade(self, ticker: str, action: str, quantity: float, current_price: float) -> int:
         """
@@ -201,6 +205,33 @@ class BacktestService:
 
         return 0
 
+    def _record_trade_entry(self, ticker: str, action: str, date: str, price: float, quantity: int):
+        """Record a trade entry (opening a position)."""
+        trade = {
+            "ticker": ticker,
+            "action": action,
+            "entry_date": date,
+            "entry_price": price,
+            "quantity": quantity,
+            "exit_date": None,
+            "exit_price": None,
+            "pnl": None
+        }
+        self.trades.append(trade)
+
+    def _record_trade(self, ticker: str, position_type: str, date: str, price: float, quantity: int, pnl: float):
+        """Record a completed trade with realized PnL."""
+        # Find the most recent open trade for this ticker and position type
+        for trade in reversed(self.trades):
+            if (trade["ticker"] == ticker and 
+                trade["exit_date"] is None and
+                ((position_type == "long" and trade["action"] == "buy") or
+                 (position_type == "short" and trade["action"] == "short"))):
+                trade["exit_date"] = date
+                trade["exit_price"] = price
+                trade["pnl"] = pnl
+                break
+
     def calculate_portfolio_value(self, current_prices: Dict[str, float]) -> float:
         """Calculate total portfolio value."""
         total_value = self.portfolio["cash"]
@@ -232,6 +263,156 @@ class BacktestService:
             get_insider_trades(ticker, self.end_date, start_date=self.start_date, limit=1000, api_key=api_key)
             get_company_news(ticker, self.end_date, start_date=self.start_date, limit=1000, api_key=api_key)
 
+    def _calculate_trade_metrics(self, performance_metrics: Dict[str, Any]):
+        """Calculate trade-based metrics (win rate, profit factor, etc.)."""
+        if not self.trades:
+            performance_metrics["total_trades"] = 0
+            performance_metrics["win_rate"] = 0.0
+            performance_metrics["profit_factor"] = 0.0
+            performance_metrics["expectancy"] = 0.0
+            performance_metrics["average_win"] = 0.0
+            performance_metrics["average_loss"] = 0.0
+            return
+
+        # Filter completed trades (have both entry and exit)
+        completed_trades = [t for t in self.trades if t.get("exit_date") is not None]
+        performance_metrics["total_trades"] = len(completed_trades)
+
+        if len(completed_trades) == 0:
+            performance_metrics["win_rate"] = 0.0
+            performance_metrics["profit_factor"] = 0.0
+            performance_metrics["expectancy"] = 0.0
+            performance_metrics["average_win"] = 0.0
+            performance_metrics["average_loss"] = 0.0
+            return
+
+        # Calculate win rate
+        winning_trades = [t for t in completed_trades if t.get("pnl", 0) > 0]
+        losing_trades = [t for t in completed_trades if t.get("pnl", 0) < 0]
+        performance_metrics["win_rate"] = (len(winning_trades) / len(completed_trades)) * 100 if completed_trades else 0.0
+
+        # Calculate average win/loss
+        if winning_trades:
+            performance_metrics["average_win"] = np.mean([t.get("pnl", 0) for t in winning_trades])
+        else:
+            performance_metrics["average_win"] = 0.0
+
+        if losing_trades:
+            performance_metrics["average_loss"] = abs(np.mean([t.get("pnl", 0) for t in losing_trades]))
+        else:
+            performance_metrics["average_loss"] = 0.0
+
+        # Calculate profit factor
+        total_profit = sum([t.get("pnl", 0) for t in winning_trades]) if winning_trades else 0.0
+        total_loss = abs(sum([t.get("pnl", 0) for t in losing_trades])) if losing_trades else 0.0
+        if total_loss > 1e-9:
+            performance_metrics["profit_factor"] = total_profit / total_loss
+        else:
+            performance_metrics["profit_factor"] = float('inf') if total_profit > 0 else 0.0
+
+        # Calculate expectancy
+        if completed_trades:
+            total_pnl = sum([t.get("pnl", 0) for t in completed_trades])
+            performance_metrics["expectancy"] = total_pnl / len(completed_trades)
+        else:
+            performance_metrics["expectancy"] = 0.0
+
+    def _calculate_daily_metrics(self, performance_metrics: Dict[str, Any]):
+        """Calculate daily PnL based metrics."""
+        if not self.daily_pnl:
+            performance_metrics["largest_winning_day"] = 0.0
+            performance_metrics["largest_losing_day"] = 0.0
+            performance_metrics["profitable_days_pct"] = 0.0
+            performance_metrics["losing_streaks"] = []
+            performance_metrics["time_to_recovery"] = None
+            return
+
+        daily_pnl_values = [d.get("pnl", 0) for d in self.daily_pnl]
+        
+        # Largest winning/losing days
+        if daily_pnl_values:
+            performance_metrics["largest_winning_day"] = max(daily_pnl_values) if max(daily_pnl_values) > 0 else 0.0
+            performance_metrics["largest_losing_day"] = min(daily_pnl_values) if min(daily_pnl_values) < 0 else 0.0
+        else:
+            performance_metrics["largest_winning_day"] = 0.0
+            performance_metrics["largest_losing_day"] = 0.0
+
+        # % Profitable days
+        profitable_days = len([d for d in daily_pnl_values if d > 0])
+        performance_metrics["profitable_days_pct"] = (profitable_days / len(daily_pnl_values)) * 100 if daily_pnl_values else 0.0
+
+        # Losing streaks (track all streaks, not just max)
+        streaks = []
+        current_streak = 0
+        for pnl in daily_pnl_values:
+            if pnl < 0:
+                current_streak += 1
+            else:
+                if current_streak > 0:
+                    streaks.append(current_streak)
+                current_streak = 0
+        if current_streak > 0:
+            streaks.append(current_streak)
+        performance_metrics["losing_streaks"] = streaks if streaks else []
+
+        # Time to recovery (days to recover from max drawdown)
+        if len(self.portfolio_values) > 1:
+            values_df = pd.DataFrame(self.portfolio_values).set_index("Date")
+            rolling_max = values_df["Portfolio Value"].cummax()
+            drawdown = (values_df["Portfolio Value"] - rolling_max) / rolling_max
+            
+            if len(drawdown) > 0 and drawdown.min() < 0:
+                max_dd_date = drawdown.idxmin()
+                max_dd_value = rolling_max.loc[max_dd_date]
+                
+                # Find when portfolio value recovered to max_dd_value
+                recovery_idx = None
+                for idx, (date, value) in enumerate(values_df.iterrows()):
+                    if idx > values_df.index.get_loc(max_dd_date) and value["Portfolio Value"] >= max_dd_value:
+                        recovery_idx = idx
+                        break
+                
+                if recovery_idx is not None:
+                    dd_date_idx = values_df.index.get_loc(max_dd_date)
+                    performance_metrics["time_to_recovery"] = recovery_idx - dd_date_idx
+                else:
+                    performance_metrics["time_to_recovery"] = None
+            else:
+                performance_metrics["time_to_recovery"] = None
+        else:
+            performance_metrics["time_to_recovery"] = None
+
+    def _calculate_topstep_metrics(self, performance_metrics: Dict[str, Any]):
+        """Calculate Topstep strategy specific metrics."""
+        # Check if we're trading Topstep instruments (ES, NQ, MES, MNQ)
+        topstep_tickers = {"ES", "NQ", "MES", "MNQ"}
+        is_topstep = any(ticker.upper() in topstep_tickers for ticker in self.tickers)
+        
+        if not is_topstep:
+            # Not a Topstep strategy, set metrics to None/0
+            performance_metrics["opening_range_breaks"] = 0
+            performance_metrics["pullback_entries"] = 0
+            performance_metrics["regime_filter_passes"] = 0
+            performance_metrics["daily_trade_limit_hits"] = 0
+            return
+        
+        # For now, we'll track basic stats from trades
+        # In the future, this can be enhanced to parse strategy-specific signals
+        # from analyst_signals or decisions metadata
+        
+        # Count trades (as a proxy for strategy activity)
+        # This is a placeholder - ideally we'd track:
+        # - Opening range breaks from strategy signals
+        # - Pullback entries from strategy signals
+        # - Regime filter passes from strategy signals
+        # - Daily limit hits from strategy signals
+        
+        # For now, set to 0 and note that this requires strategy-specific signal tracking
+        performance_metrics["opening_range_breaks"] = 0  # TODO: Track from strategy signals
+        performance_metrics["pullback_entries"] = 0  # TODO: Track from strategy signals
+        performance_metrics["regime_filter_passes"] = 0  # TODO: Track from strategy signals
+        performance_metrics["daily_trade_limit_hits"] = 0  # TODO: Track from strategy signals
+
     def _update_performance_metrics(self, performance_metrics: Dict[str, Any]):
         """Update performance metrics using daily returns."""
         values_df = pd.DataFrame(self.portfolio_values).set_index("Date")
@@ -240,6 +421,13 @@ class BacktestService:
 
         if len(clean_returns) < 2:
             return
+
+        # Total return
+        if len(values_df) > 0:
+            final_value = values_df["Portfolio Value"].iloc[-1]
+            performance_metrics["total_return"] = ((final_value / self.initial_capital) - 1) * 100
+        else:
+            performance_metrics["total_return"] = 0.0
 
         daily_risk_free_rate = 0.0434 / 252
         excess_returns = clean_returns - daily_risk_free_rate
@@ -279,6 +467,15 @@ class BacktestService:
             performance_metrics["max_drawdown"] = 0.0
             performance_metrics["max_drawdown_date"] = None
 
+        # Calculate trade-based metrics
+        self._calculate_trade_metrics(performance_metrics)
+        
+        # Calculate daily PnL metrics
+        self._calculate_daily_metrics(performance_metrics)
+        
+        # Calculate Topstep strategy metrics (if applicable)
+        self._calculate_topstep_metrics(performance_metrics)
+
     async def run_backtest_async(self, progress_callback: Optional[Callable] = None) -> Dict[str, Any]:
         """
         Run the backtest asynchronously with optional progress callbacks.
@@ -292,9 +489,25 @@ class BacktestService:
             "sharpe_ratio": 0.0,
             "sortino_ratio": 0.0,
             "max_drawdown": 0.0,
+            "total_return": 0.0,
             "long_short_ratio": 0.0,
             "gross_exposure": 0.0,
             "net_exposure": 0.0,
+            "total_trades": 0,
+            "win_rate": 0.0,
+            "profit_factor": 0.0,
+            "expectancy": 0.0,
+            "average_win": 0.0,
+            "average_loss": 0.0,
+            "time_to_recovery": None,
+            "losing_streaks": [],
+            "profitable_days_pct": 0.0,
+            "largest_winning_day": 0.0,
+            "largest_losing_day": 0.0,
+            "opening_range_breaks": 0,
+            "pullback_entries": 0,
+            "regime_filter_passes": 0,
+            "daily_trade_limit_hits": 0,
         }
 
         # Initialize portfolio values
@@ -387,14 +600,46 @@ class BacktestService:
 
             # Execute trades based on decisions
             executed_trades = {}
+            # Store previous realized gains to track new realized PnL
+            prev_realized_gains = {}
+            for ticker in self.tickers:
+                prev_realized_gains[ticker] = {
+                    "long": self.portfolio["realized_gains"][ticker]["long"],
+                    "short": self.portfolio["realized_gains"][ticker]["short"]
+                }
+            
             for ticker in self.tickers:
                 decision = decisions.get(ticker, {"action": "hold", "quantity": 0})
                 action, quantity = decision.get("action", "hold"), decision.get("quantity", 0)
                 executed_quantity = self.execute_trade(ticker, action, quantity, current_prices[ticker])
                 executed_trades[ticker] = executed_quantity
+                
+                # Track realized PnL from this trade
+                if executed_quantity > 0:
+                    new_long_pnl = self.portfolio["realized_gains"][ticker]["long"] - prev_realized_gains[ticker]["long"]
+                    new_short_pnl = self.portfolio["realized_gains"][ticker]["short"] - prev_realized_gains[ticker]["short"]
+                    
+                    if new_long_pnl != 0:
+                        # Long position was closed
+                        self._record_trade(ticker, "long", current_date_str, current_prices[ticker], executed_quantity, new_long_pnl)
+                    elif new_short_pnl != 0:
+                        # Short position was closed
+                        self._record_trade(ticker, "short", current_date_str, current_prices[ticker], executed_quantity, new_short_pnl)
+                    elif action in ["buy", "short"]:
+                        # Opening a new position
+                        self._record_trade_entry(ticker, action, current_date_str, current_prices[ticker], executed_quantity)
 
             # Calculate portfolio value
             total_value = self.calculate_portfolio_value(current_prices)
+            
+            # Track daily PnL
+            daily_pnl_value = total_value - self.previous_portfolio_value
+            self.daily_pnl.append({
+                "date": current_date_str,
+                "pnl": daily_pnl_value,
+                "portfolio_value": total_value
+            })
+            self.previous_portfolio_value = total_value
 
             # Calculate exposures
             long_exposure = sum(self.portfolio["positions"][t]["long"] * current_prices[t] for t in self.tickers)

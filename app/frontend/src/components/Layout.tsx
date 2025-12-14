@@ -16,7 +16,7 @@ import { ReactNode, useEffect, useState } from 'react';
 import { TopBar } from './layout/top-bar';
 
 // Create a LayoutContent component to access the FlowContext, TabsContext, and LayoutContext
-function LayoutContent({ children }: { children: ReactNode }) {
+function LayoutContent({ children }: { children?: ReactNode }) {
   const { reactFlowInstance } = useFlowContext();
   const { openTab } = useTabsContext();
   const { isBottomCollapsed, expandBottomPanel, collapseBottomPanel, toggleBottomPanel } = useLayoutContext();
@@ -37,6 +37,11 @@ function LayoutContent({ children }: { children: ReactNode }) {
 
   const handleSettingsClick = () => {
     const tabData = TabService.createSettingsTab();
+    openTab(tabData);
+  };
+
+  const handleDashboardClick = () => {
+    const tabData = TabService.createDashboardTab();
     openTab(tabData);
   };
 
@@ -111,6 +116,7 @@ function LayoutContent({ children }: { children: ReactNode }) {
         onToggleRight={() => setIsRightCollapsed(!isRightCollapsed)}
         onToggleBottom={toggleBottomPanel}
         onSettingsClick={handleSettingsClick}
+        onDashboardClick={handleDashboardClick}
       />
 
       {/* Tab Bar - positioned absolutely like bottom panel */}
@@ -181,7 +187,7 @@ function LayoutContent({ children }: { children: ReactNode }) {
 }
 
 interface LayoutProps {
-  children: ReactNode;
+  children?: ReactNode;
 }
 
 export function Layout({ children }: LayoutProps) {
